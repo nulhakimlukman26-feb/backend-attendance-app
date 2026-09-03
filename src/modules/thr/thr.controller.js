@@ -1,7 +1,28 @@
 const db = require('../../models');
 
-exports.getSettings = async(req,res,next)=>{ try{ const companyId=req.query.companyId||req.user.companyId; let s=await db.ThrSetting.findOne({where:{companyId}}); if(!s) s=await db.ThrSetting.create({ companyId, enabled:true, applicableYear: new Date().getFullYear() }); res.json({ok:true,data:{settings:s}});}catch(e){next(e);} };
-exports.upsertSettings = async(req,res,next)=>{ try{ const companyId=req.body.companyId||req.user.companyId; let s=await db.ThrSetting.findOne({where:{companyId}}); if(!s) s=await db.ThrSetting.create({ companyId, ...req.body }); else { Object.assign(s, req.body); await s.save(); } res.json({ok:true,data:{settings:s}});}catch(e){next(e);} };
+const ALLOWED_WAGE_BASIS = ['AVERAGE_WAGE_NON_BONUS','BASIC_PLUS_FIXED_ALLOWANCE','BASIC_ONLY'];
+
+exports.getSettings = async(req,res,next)=>{ try{ const companyId=req.query.companyId||req.user.companyId||req.headers['x-company-id']; let s=await db.ThrSetting.findOne({where:{companyId}}); if(!s) s=await db.ThrSetting.create({ companyId, enabled:true, applicableYear: new Date().getFullYear() }); res.json({ok:true,data:{settings:s}});}catch(e){next(e);} };
+exports.upsertSettings = async(req,res,next)=>{ 
+  try{ 
+    const companyId=req.body.companyId||req.user.companyId||req.headers['x-company-id']; 
+    if (req.body.wageBasisType && !ALLOWED_WAGE_BASIS.includes(req.body.wageBasisType)) {
+      return res.status(400).json({ ok:false, error:{ code:'VALIDATION_ERROR', message:`wageBasisType harus salah satu dari: ${ALLOWED_WAGE_BASIS.join(', ')}`, details:[{ path:'wageBasisType', message:'Invalid enum value' }] }});
+    }
+    // Validate applicableYear if present
+    if (req.body.applicableYear !== undefined) {
+      const y = parseInt(req.body.applicableYear,10);
+      if (isNaN(y) || y<2000 || y>2100) return res.status(400).json({ ok:false, error:{ code:'VALIDATION_ERROR', message:'applicableYear 2000..2100' }});
+    }
+    let s=await db.ThrSetting.findOne({where:{companyId}}); 
+    const prevWageBasis = s?.wageBasisType;
+    if(!s) s=await db.ThrSetting.create({ companyId, ...req.body }); 
+    else { Object.assign(s, req.body); await s.save(); } 
+    // If wageBasisType changed, log for audit that recalculation may be needed (frontend triggers saveTHRSettings + toast)
+    const wageChanged = prevWageBasis && req.body.wageBasisType && prevWageBasis !== req.body.wageBasisType;
+    res.json({ok:true,data:{settings:s, meta:{ wageBasisChanged: !!wageChanged }}}); 
+  }catch(e){next(e);} 
+};
 exports.resetSettings = async(req,res,next)=>{ try{ const companyId=req.body.companyId||req.query.companyId||req.user.companyId; let s=await db.ThrSetting.findOne({where:{companyId}}); if(!s) s=await db.ThrSetting.create({ companyId, enabled:true }); else { await s.destroy(); s=await db.ThrSetting.create({ companyId, enabled:true, applicableYear:new Date().getFullYear()}); } res.json({ok:true,data:{settings:s}});}catch(e){next(e);} };
 
 function calcTHR({ employee, tenureMonths, baseSalary }) {

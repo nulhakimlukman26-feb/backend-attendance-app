@@ -1,6 +1,7 @@
 const express = require('express');
 const ctrl = require('./kpi.controller');
 const { authenticate, authorize } = require('../../middleware/auth');
+const { validatePeriodQuery } = require('../../middleware/validate');
 const router = express.Router();
 
 router.get('/masters', authenticate, ctrl.listMasters);
@@ -11,7 +12,7 @@ router.delete('/masters/:id', authenticate, authorize('ADMIN','HR'), ctrl.delete
 router.get('/config', authenticate, ctrl.getConfig);
 router.put('/config', authenticate, authorize('ADMIN','HR'), ctrl.upsertConfig);
 
-router.get('/scores', authenticate, ctrl.listScores);
+router.get('/scores', authenticate, validatePeriodQuery, ctrl.listScores);
 router.post('/scores', authenticate, authorize('ADMIN','HR'), ctrl.upsertScore);
 router.post('/scores/batch', authenticate, authorize('ADMIN','HR'), ctrl.batchUpsert);
 router.post('/scores/custom', authenticate, authorize('ADMIN','HR'), ctrl.createCustom);

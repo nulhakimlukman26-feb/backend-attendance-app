@@ -3,6 +3,7 @@ const ctrl = require('./attendance.controller');
 const { authenticate, authorize } = require('../../middleware/auth');
 const upload = require('../../middleware/upload');
 const rateLimit = require('express-rate-limit');
+const { validatePeriodQuery } = require('../../middleware/validate');
 
 const router = express.Router();
 
@@ -13,16 +14,16 @@ const uploadLimiter = rateLimit({
 });
 
 router.post('/upload', authenticate, authorize('ADMIN','HR'), uploadLimiter, upload.single('file'), ctrl.upload);
-router.get('/periods', authenticate, ctrl.listPeriods);
-router.get('/periods/:key/summary', authenticate, ctrl.getSummary);
-router.get('/periods/:key', authenticate, ctrl.getPeriod);
+router.get('/periods', authenticate, validatePeriodQuery, ctrl.listPeriods);
+router.get('/periods/:key/summary', authenticate, validatePeriodQuery, ctrl.getSummary);
+router.get('/periods/:key', authenticate, validatePeriodQuery, ctrl.getPeriod);
 router.patch('/periods/:key/activate', authenticate, ctrl.activatePeriod);
 router.delete('/periods/:key', authenticate, authorize('ADMIN','HR'), ctrl.deletePeriod);
-router.get('/records', authenticate, ctrl.listRecords);
-router.get('/period-options', authenticate, ctrl.periodOptions);
+router.get('/records', authenticate, validatePeriodQuery, ctrl.listRecords);
+router.get('/period-options', authenticate, validatePeriodQuery, ctrl.periodOptions);
 router.post('/manual-override', authenticate, authorize('ADMIN','HR'), ctrl.createOverride);
 router.delete('/manual-override', authenticate, authorize('ADMIN','HR'), ctrl.deleteOverride);
-router.get('/manual-overrides', authenticate, ctrl.listOverrides);
+router.get('/manual-overrides', authenticate, validatePeriodQuery, ctrl.listOverrides);
 router.get('/upload-logs', authenticate, ctrl.listUploadLogs);
 router.delete('/upload-logs/:id', authenticate, authorize('ADMIN','HR'), ctrl.deleteUploadLog);
 

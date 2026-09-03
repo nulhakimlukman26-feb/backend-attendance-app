@@ -34,13 +34,24 @@ function calculateEmployeePayroll({ employee, records, settings, manualAdjustmen
 
 exports.calculate = async(req,res,next)=>{
   try{
-    const { periodKey, employeeId, manualAdjustments, payrollNote } = req.body;
+    let { periodKey, employeeId, manualAdjustments, payrollNote } = req.body;
     const companyId = req.body.companyId || req.user.companyId || req.headers['x-company-id'];
     if(!periodKey || !employeeId) return res.status(400).json({ ok:false, error:{code:'VALIDATION_ERROR', message:'periodKey dan employeeId wajib'}});
+    // Normalize DAY_ prefix to month (MonthPicker.jsx:18 fallback, frontend MonthPicker emits MONTH even for DAY)
+    if (periodKey) {
+      const { parsePrefixedKey } = require('../../utils/periodFilter');
+      const parsed = parsePrefixedKey(periodKey);
+      if (parsed.type === 'DAY') periodKey = parsed.monthKey;
+      if (periodKey && !/^\d{4}-\d{2}$/.test(periodKey)) {
+        // For YEAR/WEEK/PRESET we cannot calculate payroll (monthly granularity) — return 400
+        if (['YEAR','WEEK','PRESET'].includes(parsed.type)) return res.status(400).json({ ok:false, error:{ code:'VALIDATION_ERROR', message:'Payroll hanya mendukung periode bulanan (YYYY-MM) atau DAY_ prefix yang dinormalisasi' }});
+      }
+    }
     const employee = await db.Employee.findByPk(employeeId);
     if(!employee) return res.status(404).json({ ok:false, error:{code:'EMPLOYEE_NOT_FOUND'}});
     const period = await db.AttendancePeriod.findOne({ where:{ companyId, key: periodKey }});
-    const records = period ? await db.AttendanceRecord.findAll({ where:{ periodId: period.id, employeeId }}) : [];
+    if (!period) return res.status(404).json({ ok:false, error:{ code:'PERIOD_NOT_FOUND', message:`Periode ${periodKey} tidak ditemukan` }});
+    const records = await db.AttendanceRecord.findAll({ where:{ periodId: period.id, employeeId }});
     const settings = await db.AppSetting.findOne({ where:{ companyId }});
     const result = calculateEmployeePayroll({ employee, records, settings: settings?.toJSON(), manualAdjustments: manualAdjustments||[], payrollNote });
     res.json({ ok:true, data:{ payroll: result }});

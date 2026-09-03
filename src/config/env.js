@@ -19,6 +19,14 @@ const envSchema = z.object({
   R2_SECRET_ACCESS_KEY: z.string().optional(),
   R2_BUCKET: z.string().default('attendance-app'),
   R2_PUBLIC_URL: z.string().optional(),
+  // Global SMTP fallback (overridden by per-company AppSetting.smtp* if set)
+  SMTP_HOST: z.string().optional(),
+  SMTP_PORT: z.string().optional(),
+  SMTP_SECURE: z.string().optional(),
+  SMTP_USER: z.string().optional(),
+  SMTP_PASS: z.string().optional(),
+  SMTP_FROM: z.string().optional(),
+  SMTP_FROM_NAME: z.string().optional(),
 });
 
 function validateEnv() {

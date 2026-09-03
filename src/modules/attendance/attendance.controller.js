@@ -2,10 +2,16 @@ const db = require('../../models');
 const { parseAttendanceFile } = require('../../utils/attendanceParser');
 const { uploadToR2 } = require('../../utils/r2Upload');
 const { Op } = require('sequelize');
+const {
+  resolvePeriodFilter,
+  parsePrefixedKey,
+  applyDateWhere,
+  endOfMonth,
+} = require('../../utils/periodFilter');
 
 // Helper: generate summary similar to src/core/summaryGen.js (simplified server truth)
 // For now we compute basic aggregates; detailed calc can be expanded later.
-function generateServerSummary(period, records, employees, settings) {
+function generateServerSummary(period, records, employees, settings, filterMeta) {
   const totalRecords = records.length;
   const byStatus = records.reduce((acc,r)=>{ acc[r.status]=(acc[r.status]||0)+1; return acc;},{});
   const byEmployee = {};
@@ -16,8 +22,9 @@ function generateServerSummary(period, records, employees, settings) {
     else byEmployee[r.employeeId].tidakHadir++;
   }
   return {
-    periodKey: period.key,
-    label: period.label,
+    periodKey: period ? period.key : (filterMeta?.key || filterMeta?.periodKey || null),
+    label: period ? period.label : (filterMeta?.label || null),
+    filter: filterMeta || null,
     totalEmployees: employees.length,
     totalRecords,
     statusBreakdown: byStatus,
@@ -173,8 +180,14 @@ exports.listPeriods = async (req, res, next) => {
     const companyId = req.query.companyId || req.user.companyId || req.headers['x-company-id'];
     const where={}; if(companyId) where.companyId=companyId;
     const periods = await db.AttendancePeriod.findAll({ where, order:[['period_start','DESC']], include:[{ model: db.AttendanceRecord, attributes:['id'] }] });
-    // Map to history list shape
-    const list = periods.map(p=>({ key:p.key, label:p.label, fileName:p.fileName, fileUrl:p.fileUrl, periodStart:p.periodStart, periodEnd:p.periodEnd, recordCount: p.AttendanceRecords?.length||0 }));
+    // Map to history list shape — deduped and sorted descending (supports MonthPicker.jsx dedupe fallback)
+    const seen = new Set();
+    const list = [];
+    for (const p of periods) {
+      if (seen.has(p.key)) continue;
+      seen.add(p.key);
+      list.push({ key:p.key, label:p.label, fileName:p.fileName, fileUrl:p.fileUrl, periodStart:p.periodStart, periodEnd:p.periodEnd, recordCount: p.AttendanceRecords?.length||0 });
+    }
     res.json({ ok:true, data:{ periods:list }});
   } catch(e){ next(e); }
 };
@@ -182,44 +195,178 @@ exports.listPeriods = async (req, res, next) => {
 exports.getPeriod = async (req, res, next) => {
   try {
     const companyId = req.query.companyId || req.user.companyId || req.headers['x-company-id'];
-    const where={ key:req.params.key }; if(companyId) where.companyId=companyId;
-    const period = await db.AttendancePeriod.findOne({ where });
-    if(!period) return res.status(404).json({ ok:false, error:{code:'NOT_FOUND', message:'Periode tidak ditemukan'}});
-    const records = await db.AttendanceRecord.findAll({ where:{ periodId: period.id }, include:[{ model: db.Employee, attributes:['id','fullName','department']}], order:[['date','ASC'],['employee_id','ASC']] });
-    res.json({ ok:true, data:{ period, records }});
+    // Support prefixed keys: DAY_2026-07-15 etc should resolve to underlying month period for detail view
+    // Apply same resolution as PeriodPicker -> MonthPicker normalisation
+    const rawKey = req.params.key;
+    const parsedKey = parsePrefixedKey(rawKey);
+    let lookupKey = rawKey;
+    let filterDate = null;
+    if (parsedKey.type === 'DAY') {
+      lookupKey = parsedKey.monthKey;
+      filterDate = parsedKey.date;
+    } else if (parsedKey.type === 'YEAR' || parsedKey.type === 'PRESET' || parsedKey.type === 'WEEK') {
+      // For year/preset/week there is no single month period; return aggregated via query filtering instead
+      // Fall through to filtered records path below
+      lookupKey = null;
+    }
+    if (lookupKey) {
+      const where={ key:lookupKey }; if(companyId) where.companyId=companyId;
+      const period = await db.AttendancePeriod.findOne({ where });
+      if(!period) return res.status(404).json({ ok:false, error:{code:'PERIOD_NOT_FOUND', message:`Periode ${rawKey} tidak ditemukan`}});
+      let recordsWhere = { periodId: period.id };
+      if (filterDate) recordsWhere.date = filterDate;
+      // Also support additional query filters (startDate/endDate etc) if provided
+      const filter = resolvePeriodFilter(req.query, {});
+      if (!filter.isEmpty && !filter.isAll && !filter.isInvalid && filter.dateFrom) {
+        // If filter has date range overlapping this period, narrow recordsWhere
+        if (filter.dateFrom === filter.dateTo) recordsWhere.date = filter.dateFrom;
+        else recordsWhere.date = { [Op.gte]: filter.dateFrom, [Op.lte]: filter.dateTo };
+      }
+      const records = await db.AttendanceRecord.findAll({ where: recordsWhere, include:[{ model: db.Employee, attributes:['id','fullName','department']}], order:[['date','ASC'],['employee_id','ASC']] });
+      res.json({ ok:true, data:{ period, records, filter: filterDate ? { type:'DAY', date: filterDate, key: rawKey } : null }});
+      return;
+    }
+    // Non-month keys: filter records directly by date range across all periods
+    const filter = resolvePeriodFilter({ periodKey: rawKey, ...req.query }, {});
+    if (filter.isInvalid) return res.status(400).json({ ok:false, error:{ code:'VALIDATION_ERROR', message: filter.error.message }});
+    const where={ companyId };
+    applyDateWhere(where, 'date', filter);
+    // Try to include period info if possible: find periods overlapping range
+    const records = await db.AttendanceRecord.findAll({ where, include:[{ model: db.Employee, attributes:['id','fullName','department']}], order:[['date','ASC']], limit: Math.min(parseInt(req.query.limit||'200'), 1000) });
+    // Find representative period if WEEK/YEAR etc: latest period overlapping
+    let period = null;
+    if (records.length>0) {
+      period = await db.AttendancePeriod.findOne({ where:{ id: records[0].periodId }});
+    }
+    res.json({ ok:true, data:{ period, records, filter }});
   } catch(e){ next(e); }
 };
 
 exports.getSummary = async (req, res, next) => {
   try {
     const companyId = req.query.companyId || req.user.companyId || req.headers['x-company-id'];
-    const where={ key:req.params.key }; if(companyId) where.companyId=companyId;
-    const period = await db.AttendancePeriod.findOne({ where });
-    if(!period) return res.status(404).json({ ok:false, error:{code:'NOT_FOUND'}});
-    const records = await db.AttendanceRecord.findAll({ where:{ periodId: period.id }});
-    const employees = await db.Employee.findAll({ where:{ companyId: period.companyId }});
-    let settings=null;
-    try{ settings = await db.AppSetting.findOne({ where:{ companyId: period.companyId }});}catch{}
-    const summary = generateServerSummary(period, records, employees, settings);
-    res.json({ ok:true, data:{ summary, period, recordsCount: records.length }});
+    // Unified filter: route :key + query params (type, date, startDate, endDate, year, preset, periodKey etc)
+    // Frontend may call GET /attendance/periods/:key/summary?filter=... or via applyPeriodFilter cfg as query
+    const filter = resolvePeriodFilter(req.query, req.params);
+    if (filter.isInvalid) return res.status(400).json({ ok:false, error:{ code:'VALIDATION_ERROR', message: filter.error.message, details: filter.error.errors }});
+    if (filter.isAll) {
+      // Unfiltered summary across all periods for company
+      const records = await db.AttendanceRecord.findAll({ where:{ companyId }});
+      const employees = await db.Employee.findAll({ where:{ companyId }});
+      let settings=null; try{ settings = await db.AppSetting.findOne({ where:{ companyId }});}catch{}
+      const summary = generateServerSummary({ key:'ALL', label:'Semua Periode' }, records, employees, settings, filter);
+      return res.json({ ok:true, data:{ summary, period: null, recordsCount: records.length, filter }});
+    }
+    // If filter empty and no route key, fallback to activePeriodKey or latest period
+    let effectiveFilter = filter;
+    if (filter.isEmpty && !req.params.key) {
+      // No filter provided — try activePeriodKey
+      let setting=null; try{ setting = await db.AppSetting.findOne({ where:{ companyId }});}catch{}
+      if (setting?.activePeriodKey) {
+        effectiveFilter = resolvePeriodFilter({ periodKey: setting.activePeriodKey }, {});
+      }
+    }
+    // Handle each type
+    if (effectiveFilter.isEmpty) {
+      // Still empty — fallback to original behaviour: try route key as period lookup
+      const where={ key:req.params.key }; if(companyId) where.companyId=companyId;
+      const period = await db.AttendancePeriod.findOne({ where });
+      if(!period) return res.status(404).json({ ok:false, error:{code:'PERIOD_NOT_FOUND', message:`Periode ${req.params.key} tidak ditemukan`}});
+      const records = await db.AttendanceRecord.findAll({ where:{ periodId: period.id }});
+      const employees = await db.Employee.findAll({ where:{ companyId: period.companyId }});
+      let settings=null; try{ settings = await db.AppSetting.findOne({ where:{ companyId: period.companyId }});}catch{}
+      const summary = generateServerSummary(period, records, employees, settings, effectiveFilter);
+      return res.json({ ok:true, data:{ summary, period, recordsCount: records.length, filter: effectiveFilter }});
+    }
+
+    // Now effectiveFilter has type
+    const f = effectiveFilter;
+    if (f.type === 'MONTH') {
+      const period = await db.AttendancePeriod.findOne({ where:{ companyId, key: f.monthKey }});
+      if(!period) return res.status(404).json({ ok:false, error:{code:'PERIOD_NOT_FOUND', message:`Periode ${f.monthKey} tidak ditemukan`}});
+      const records = await db.AttendanceRecord.findAll({ where:{ periodId: period.id }});
+      const employees = await db.Employee.findAll({ where:{ companyId }});
+      let settings=null; try{ settings = await db.AppSetting.findOne({ where:{ companyId }});}catch{}
+      const summary = generateServerSummary(period, records, employees, settings, f);
+      return res.json({ ok:true, data:{ summary, period, recordsCount: records.length, filter: f }});
+    }
+    if (f.type === 'DAY') {
+      const monthKey = f.monthKey;
+      const period = await db.AttendancePeriod.findOne({ where:{ companyId, key: monthKey }});
+      if(!period) return res.status(404).json({ ok:false, error:{code:'PERIOD_NOT_FOUND', message:`Periode ${monthKey} tidak ditemukan`}});
+      const records = await db.AttendanceRecord.findAll({ where:{ periodId: period.id, date: f.date }});
+      const employees = await db.Employee.findAll({ where:{ companyId }});
+      let settings=null; try{ settings = await db.AppSetting.findOne({ where:{ companyId }});}catch{}
+      const summary = generateServerSummary(period, records, employees, settings, f);
+      // Override periodKey/label to reflect day
+      summary.periodKey = f.key;
+      summary.label = f.label;
+      summary.date = f.date;
+      return res.json({ ok:true, data:{ summary, period, recordsCount: records.length, filter: f }});
+    }
+    if (f.type === 'WEEK' || f.type === 'PRESET') {
+      // Cross-period range: query records by date range across all company's periods
+      const where={ companyId }; applyDateWhere(where, 'date', f);
+      const records = await db.AttendanceRecord.findAll({ where, order:[['date','ASC']] });
+      const employees = await db.Employee.findAll({ where:{ companyId }});
+      let settings=null; try{ settings = await db.AppSetting.findOne({ where:{ companyId }});}catch{}
+      // Find representative period if possible (first overlapping)
+      let period=null;
+      if (records.length>0) period = await db.AttendancePeriod.findOne({ where:{ id: records[0].periodId }});
+      // If no records but we still have a date range, still return empty summary (200) but with filter
+      const summary = generateServerSummary(period || { key: f.key, label: f.label }, records, employees, settings, f);
+      summary.periodKey = f.key;
+      summary.label = f.label;
+      summary.dateFrom = f.dateFrom;
+      summary.dateTo = f.dateTo;
+      return res.json({ ok:true, data:{ summary, period, recordsCount: records.length, filter: f }});
+    }
+    if (f.type === 'YEAR') {
+      const where={ companyId }; applyDateWhere(where, 'date', f);
+      const records = await db.AttendanceRecord.findAll({ where });
+      const employees = await db.Employee.findAll({ where:{ companyId }});
+      let settings=null; try{ settings = await db.AppSetting.findOne({ where:{ companyId }});}catch{}
+      let period=null; // no single month
+      const summary = generateServerSummary({ key: f.key, label: f.label }, records, employees, settings, f);
+      summary.periodKey = f.key;
+      summary.label = f.label;
+      summary.year = f.year;
+      return res.json({ ok:true, data:{ summary, period, recordsCount: records.length, filter: f }});
+    }
+    // Fallback
+    return res.status(400).json({ ok:false, error:{code:'VALIDATION_ERROR', message:'Filter tidak didukung'}});
   } catch(e){ next(e); }
 };
 
 exports.activatePeriod = async (req, res, next) => {
   try {
     const companyId = req.body.companyId || req.query.companyId || req.user.companyId || req.headers['x-company-id'];
-    const key = req.params.key;
+    const rawKey = req.params.key;
+    // Validate key length and prefix support (VARCHAR 32)
+    if (!rawKey || rawKey.length > 32) return res.status(400).json({ ok:false, error:{code:'VALIDATION_ERROR', message:'Key periode terlalu panjang (max 32)'}});
+    // Allow MONTH, DAY_, YEAR_, PRESET_, WEEK_ or unknown- prefix fallback
+    const parsed = parsePrefixedKey(rawKey);
+    // Still allow unknown fallback keys like unknown-timestamp; just store as-is
     let setting = await db.AppSetting.findOne({ where:{ companyId }});
-    if(!setting) setting = await db.AppSetting.create({ companyId, activePeriodKey:key });
-    else { setting.activePeriodKey=key; await setting.save(); }
-    res.json({ ok:true, data:{ activePeriodKey:key }});
+    if(!setting) setting = await db.AppSetting.create({ companyId, activePeriodKey:rawKey });
+    else { setting.activePeriodKey=rawKey; await setting.save(); }
+    res.json({ ok:true, data:{ activePeriodKey:rawKey, parsed }});
   } catch(e){ next(e); }
 };
 
 exports.deletePeriod = async (req, res, next) => {
   try {
     const companyId = req.query.companyId || req.user.companyId || req.headers['x-company-id'];
-    const where={ key:req.params.key }; if(companyId) where.companyId=companyId;
+    // Support prefixed delete: if DAY_ etc, resolve to month
+    const rawKey = req.params.key;
+    const parsed = parsePrefixedKey(rawKey);
+    let lookupKey = rawKey;
+    if (parsed.type === 'DAY') lookupKey = parsed.monthKey;
+    else if (parsed.type === 'YEAR' || parsed.type === 'PRESET' || parsed.type === 'WEEK') {
+      // For non-month keys, delete all periods overlapping range? Instead treat as no-op for now
+      return res.status(400).json({ ok:false, error:{code:'VALIDATION_ERROR', message:'Gunakan key YYYY-MM untuk hapus periode'}});
+    }
+    const where={ key:lookupKey }; if(companyId) where.companyId=companyId;
     const period = await db.AttendancePeriod.findOne({ where });
     if(!period) return res.status(404).json({ ok:false, error:{code:'NOT_FOUND'}});
     await period.destroy();
@@ -229,20 +376,73 @@ exports.deletePeriod = async (req, res, next) => {
 
 exports.listRecords = async (req, res, next) => {
   try {
+    const companyId = req.query.companyId || req.user.companyId || req.headers['x-company-id'];
+    // Unified period filter resolution (supports periodKey, type+date, type+startDate/endDate, preset, year, dateFrom/dateTo)
+    const filter = resolvePeriodFilter(req.query, {});
+    if (filter.isInvalid) return res.status(400).json({ ok:false, error:{ code:'VALIDATION_ERROR', message: filter.error.message }});
     const where={};
-    if(req.query.companyId||req.user.companyId) where.companyId = req.query.companyId||req.user.companyId;
-    if(req.query.periodKey){
-      const period = await db.AttendancePeriod.findOne({ where:{ key:req.query.periodKey, companyId: where.companyId }});
-      if(period) where.periodId = period.id;
+    if(companyId) where.companyId=companyId;
+    if (filter.isAll) {
+      // No date filtering
+    } else if (!filter.isEmpty) {
+      if (filter.type === 'MONTH') {
+        const period = await db.AttendancePeriod.findOne({ where:{ key: filter.monthKey, companyId }});
+        if(!period) return res.status(404).json({ ok:false, error:{code:'PERIOD_NOT_FOUND', message:`Periode ${filter.monthKey} tidak ditemukan`}});
+        where.periodId = period.id;
+      } else if (filter.type === 'DAY') {
+        // If legacy ?periodKey=DAY_... plus employeeId etc, try to find period but also filter by date
+        const period = await db.AttendancePeriod.findOne({ where:{ key: filter.monthKey, companyId }});
+        if(period) where.periodId = period.id;
+        else {
+          // No period found but we still can filter by date directly
+          // Return 404 to match KPI behaviour for consistent UX
+          return res.status(404).json({ ok:false, error:{code:'PERIOD_NOT_FOUND', message:`Periode ${filter.monthKey} tidak ditemukan`}});
+        }
+        where.date = filter.date;
+      } else if (filter.type === 'YEAR' || filter.type === 'WEEK' || filter.type === 'PRESET') {
+        applyDateWhere(where, 'date', filter);
+        // Optionally also constrain by overlapping periods if needed (skip for simplicity)
+      }
+    } else {
+      // Legacy fallback: no unified filter, use old query keys directly
+      if(req.query.periodKey){
+        // Old behaviour handled above, but if isEmpty we still check legacy periodKey without prefix parsing
+        // This path already covered by resolvePeriodFilter, so noop
+      }
+      if(req.query.dateFrom||req.query.dateTo){
+        where.date={};
+        if(req.query.dateFrom) where.date[Op.gte]=req.query.dateFrom;
+        if(req.query.dateTo) where.date[Op.lte]=req.query.dateTo;
+      }
     }
+    // Additional legacy fields
     if(req.query.employeeId) where.employeeId = req.query.employeeId;
-    if(req.query.dateFrom||req.query.dateTo){
+    // Support department filter via employee join if needed — for payroll/generic we keep simple
+    // Support explicit ?department= filter: filter records by employee department
+    if(req.query.department){
+      // Find employees in that department
+      const emps = await db.Employee.findAll({ where:{ companyId, department: req.query.department }, attributes:['id'] });
+      const ids = emps.map(e=>e.id);
+      if(ids.length===0) return res.json({ ok:true, data:{ records: [], filter }});
+      where.employeeId = where.employeeId ? where.employeeId : { [Op.in]: ids };
+      if (where.employeeId && typeof where.employeeId === 'string') {
+        // if already set to specific employee + department mismatch, handle intersection
+        if(!ids.includes(where.employeeId)) return res.json({ ok:true, data:{ records: [], filter }});
+      }
+      if (where.employeeId && where.employeeId[Op.in]) {
+        // already set
+      }
+    }
+    // Legacy dateFrom/dateTo already handled via applyDateWhere; but ensure direct query overrides
+    if (!where.date && (req.query.dateFrom||req.query.dateTo)) {
       where.date={};
       if(req.query.dateFrom) where.date[Op.gte]=req.query.dateFrom;
       if(req.query.dateTo) where.date[Op.lte]=req.query.dateTo;
     }
-    const records = await db.AttendanceRecord.findAll({ where, order:[['date','ASC']], limit: Math.min(parseInt(req.query.limit||'100'),500) });
-    res.json({ ok:true, data:{ records }});
+    const limit = Math.min(parseInt(req.query.limit||'100'),500);
+    const offset = parseInt(req.query.offset||'0',10) || 0;
+    const { count, rows } = await db.AttendanceRecord.findAndCountAll({ where, order:[['date','ASC']], limit, offset });
+    res.json({ ok:true, data:{ records: rows, total: count, limit, offset, filter: filter.isEmpty ? null : filter }});
   } catch(e){ next(e); }
 };
 
@@ -292,11 +492,12 @@ exports.listOverrides = async (req, res, next) => {
   try {
     const companyId = req.query.companyId || req.user.companyId || req.headers['x-company-id'];
     const where={}; if(companyId) where.companyId=companyId;
-    if(req.query.periodKey){
-      // filter by date range of period if needed - simple fallback: return all
+    const filter = resolvePeriodFilter(req.query, {});
+    if (!filter.isEmpty && !filter.isAll && !filter.isInvalid) {
+      applyDateWhere(where, 'date', filter);
     }
     const overrides = await db.ManualAttendanceOverride.findAll({ where, order:[['date','DESC']]});
-    res.json({ ok:true, data:{ overrides }});
+    res.json({ ok:true, data:{ overrides, filter: filter.isEmpty ? null : filter }});
   } catch(e){ next(e); }
 };
 

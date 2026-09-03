@@ -4,6 +4,8 @@ const helmet = require('helmet');
 const cors = require('cors');
 const morgan = require('morgan');
 const cookieParser = require('cookie-parser');
+const swaggerUi = require('swagger-ui-express');
+const { swaggerSpec } = require('./config/swagger');
 
 function createApp() {
   const app = express();
@@ -17,6 +19,13 @@ function createApp() {
   app.use(cookieParser());
   app.use(express.json({ limit: '10mb' }));
   app.use(express.urlencoded({ extended: true }));
+
+  // Swagger — OpenAPI docs (no auth required)
+  app.get('/api-docs.json', (req, res) => res.json(swaggerSpec));
+  app.use('/api-docs', swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+    customSiteTitle: 'Attendance API — Swagger',
+    swaggerOptions: { persistAuthorization: true },
+  }));
 
   // Health check
   app.get('/health', (req, res) => res.json({ ok:true, data:{ status:'ok', uptime: process.uptime(), version: '1.0.0' }}));

@@ -1,10 +1,11 @@
 const express = require('express');
 const ctrl = require('./thr.controller');
 const { authenticate, authorize } = require('../../middleware/auth');
+const { validate, ThrSettingsSchema } = require('../../middleware/validate');
 const router = express.Router();
 
 router.get('/settings', authenticate, ctrl.getSettings);
-router.put('/settings', authenticate, authorize('ADMIN','HR'), ctrl.upsertSettings);
+router.put('/settings', authenticate, authorize('ADMIN','HR'), validate(ThrSettingsSchema, 'body'), ctrl.upsertSettings);
 router.post('/settings/reset', authenticate, authorize('ADMIN'), ctrl.resetSettings);
 router.get('/calculate', authenticate, ctrl.calculate);
 router.post('/adjustments', authenticate, authorize('ADMIN','HR'), ctrl.upsertAdjustment);

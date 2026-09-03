@@ -40,7 +40,16 @@ module.exports = (sequelize, DataTypes) => {
     yellowToRedThreshold: { type: DataTypes.INTEGER, defaultValue: 3, field: 'yellow_to_red_threshold' },
     pointResetDay: { type: DataTypes.INTEGER, defaultValue: 1, field: 'point_reset_day' },
     pointResetEnabled: { type: DataTypes.BOOLEAN, defaultValue: true, field: 'point_reset_enabled' },
-    activePeriodKey: { type: DataTypes.STRING, field: 'active_period_key' },
+    activePeriodKey: { type: DataTypes.STRING(32), field: 'active_period_key', comment: 'Canonical active period key including prefixes: YYYY-MM, DAY_YYYY-MM-DD, YEAR_YYYY, PRESET_*, WEEK_*' },
+    // Per-company notification From email + SMTP (user-configurable via Settings)
+    notificationFromEmail: { type: DataTypes.STRING, field: 'notification_from_email', validate: { isEmail: true }, comment: 'From address for outgoing notifications (per-company)' },
+    notificationFromName: { type: DataTypes.STRING, field: 'notification_from_name', comment: 'Display name for From header' },
+    smtpHost: { type: DataTypes.STRING, field: 'smtp_host', comment: 'SMTP host, e.g. smtp.gmail.com' },
+    smtpPort: { type: DataTypes.INTEGER, field: 'smtp_port', comment: 'SMTP port, e.g. 587 or 465' },
+    smtpSecure: { type: DataTypes.BOOLEAN, field: 'smtp_secure', defaultValue: false, comment: 'true for 465 (SSL), false for 587/STARTTLS' },
+    smtpUser: { type: DataTypes.STRING, field: 'smtp_user', comment: 'SMTP auth user (often same as from email)' },
+    smtpPass: { type: DataTypes.STRING, field: 'smtp_pass', comment: 'SMTP password / app password' },
+    smtpConfigured: { type: DataTypes.VIRTUAL, get() { return !!(this.getDataValue('smtpHost') && this.getDataValue('smtpUser') && this.getDataValue('smtpPass')); } },
   }, { tableName: 'app_settings', underscored: true, timestamps: true });
   AppSetting.associate = (m) => {
     AppSetting.belongsTo(m.Company, { foreignKey: 'company_id' });
