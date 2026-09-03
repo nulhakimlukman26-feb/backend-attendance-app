@@ -12,8 +12,7 @@ function createApp() {
 
   app.use(helmet());
   app.use(cors({
-    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s=>s.trim()) : true,
-    credentials: true,
+    origin: '*'
   }));
   app.use(morgan('dev'));
   app.use(cookieParser());
