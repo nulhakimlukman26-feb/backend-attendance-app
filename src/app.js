@@ -10,9 +10,10 @@ const { swaggerSpec } = require('./config/swagger');
 function createApp() {
   const app = express();
 
-  app.use(helmet());
+  app.use(helmet({ contentSecurityPolicy: false }));
   app.use(cors({
-    origin: '*'
+    origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) : true,
+    credentials: true,
   }));
   app.use(morgan('dev'));
   app.use(cookieParser());
