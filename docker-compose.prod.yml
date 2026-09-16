@@ -15,11 +15,11 @@ services:
       - .env
     environment:
       NODE_ENV: production
-      PORT: 3000
+      PORT: 4017
     ports:
-      - "3000:3000"
+      - "4017:4017"
     healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:4017/health"]
       interval: 30s
       timeout: 5s
       retries: 3
