@@ -12,15 +12,26 @@ const {
 // Helper: generate summary similar to src/core/summaryGen.js (simplified server truth)
 // For now we compute basic aggregates; detailed calc can be expanded later.
 function generateServerSummary(period, records, employees, settings, filterMeta) {
+  const { calcDay, zeroTotals, addTotals, settingsOrDefaults } = require('../../utils/attendanceCalc');
   const totalRecords = records.length;
   const byStatus = records.reduce((acc,r)=>{ acc[r.status]=(acc[r.status]||0)+1; return acc;},{});
+  const rateByEmployee = {};
+  for (const e of employees || []) {
+    const plain = e && typeof e.toJSON === 'function' ? e.toJSON() : e;
+    if (plain && plain.id !== undefined) rateByEmployee[plain.id] = plain.overtimeRate;
+  }
   const byEmployee = {};
+  let totals = zeroTotals();
   for (const r of records) {
-    if (!byEmployee[r.employeeId]) byEmployee[r.employeeId] = { employeeId:r.employeeId, hadir:0, tidakHadir:0, tidakLengkap:0 };
+    if (!byEmployee[r.employeeId]) byEmployee[r.employeeId] = { employeeId:r.employeeId, hadir:0, tidakHadir:0, tidakLengkap:0, ...zeroTotals() };
     if (r.status==='Hadir') byEmployee[r.employeeId].hadir++;
     else if (r.status==='Data Tidak Lengkap') byEmployee[r.employeeId].tidakLengkap++;
     else byEmployee[r.employeeId].tidakHadir++;
+    const day = calcDay({ checkIn: r.checkIn, checkOut: r.checkOut }, settings, { overtimeRate: rateByEmployee[r.employeeId] });
+    byEmployee[r.employeeId] = { ...byEmployee[r.employeeId], ...addTotals(byEmployee[r.employeeId], day) };
+    totals = addTotals(totals, day);
   }
+  const cfg = settingsOrDefaults(settings);
   return {
     periodKey: period ? period.key : (filterMeta?.key || filterMeta?.periodKey || null),
     label: period ? period.label : (filterMeta?.label || null),
@@ -29,6 +40,15 @@ function generateServerSummary(period, records, employees, settings, filterMeta)
     totalRecords,
     statusBreakdown: byStatus,
     byEmployee: Object.values(byEmployee),
+    lateOvertime: totals,
+    thresholds: {
+      normalStart: cfg.normalStart,
+      overtimeStart: cfg.overtimeStart,
+      latePenaltyPerMinute: cfg.latePenaltyPerMinute,
+      latePenaltyMaxMinutes: cfg.latePenaltyMaxMinutes,
+      maxOvertimeMinutes: cfg.maxOvertimeMinutes,
+      overtimeRatePerHour: cfg.overtimeRatePerHour,
+    },
     generatedAt: new Date().toISOString(),
   };
 }

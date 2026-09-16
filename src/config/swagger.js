@@ -697,7 +697,7 @@ const swaggerDefinition = {
     },
     '/attendance/periods/{key}/summary': {
       get: {
-        tags: ['Attendance'], summary: 'Server summary (unified period filter: periodKey/type/date/range/year/preset)',
+        tags: ['Attendance'], summary: 'Server summary incl. Telat/Lembur totals per employee (unified period filter: periodKey/type/date/range/year/preset)',
         security: [{ bearerAuth: [] }],
         parameters: [
           { in: 'path', name: 'key', required: true, schema: { type: 'string' } },
@@ -1125,7 +1125,7 @@ const swaggerDefinition = {
     // ── Payroll ─────────────────────────────────────────────
     '/payroll/calculate': {
       post: {
-        tags: ['Payroll'], summary: 'Calculate (not persisted). Monthly YYYY-MM only (DAY_ normalized)',
+        tags: ['Payroll'], summary: 'Calculate incl. Telat deduction + Lembur pay (not persisted). Monthly YYYY-MM only (DAY_ normalized)',
         security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
@@ -1143,7 +1143,7 @@ const swaggerDefinition = {
             },
           },
         },
-        responses: { 200: { description: 'OK → { payroll }' }, 404: { description: 'EMPLOYEE_NOT_FOUND / PERIOD_NOT_FOUND' } },
+        responses: { 200: { description: 'OK → { payroll { present, incomplete, lateMinutes, lateDeduction, overtimeMinutes, overtimePay, gross, deductions, net, breakdown, details[] } }' }, 404: { description: 'EMPLOYEE_NOT_FOUND / PERIOD_NOT_FOUND' } },
       },
     },
     '/payroll/snapshots': {

@@ -4,30 +4,45 @@ const db = require('../../models');
 // For full parity, this should integrate attendanceCalc + settings cardRules.
 // Here we provide a working baseline that can be extended stepwise.
 function calculateEmployeePayroll({ employee, records, settings, manualAdjustments=[], payrollNote }) {
+  const { calcDay, zeroTotals, addTotals } = require('../../utils/attendanceCalc');
+  const emp = employee && typeof employee.toJSON === 'function' ? employee.toJSON() : (employee || {});
   const present = records.filter(r=>r.status==='Hadir').length;
   const incomplete = records.filter(r=>r.status==='Data Tidak Lengkap').length;
-  const baseSalary = parseFloat(employee.baseSalary)||1755000;
-  const dailySalary = parseFloat(employee.dailySalary)||85000;
-  const allowance = parseFloat(employee.allowance)||0;
+  const baseSalary = parseFloat(emp.baseSalary)||1755000;
+  const dailySalary = parseFloat(emp.dailySalary)||85000;
+  const allowance = parseFloat(emp.allowance)||0;
+  // Telat & Lembur per day (thresholds from company settings, rate prefers employee.overtimeRate)
+  let tl = zeroTotals();
+  const details = (records||[]).map((rec) => {
+    const r = rec && typeof rec.toJSON === 'function' ? rec.toJSON() : rec;
+    const day = calcDay({ checkIn: r.checkIn, checkOut: r.checkOut }, settings, emp);
+    tl = addTotals(tl, day);
+    return { date: r.date, checkIn: r.checkIn, checkOut: r.checkOut, status: r.status, ...day };
+  });
   // Basic: proportional
   const totalDays = records.length || 26;
   const effectiveDays = present + incomplete*0.5;
   const gross = (effectiveDays/totalDays)*baseSalary + allowance;
   const adjustments = manualAdjustments.reduce((s,a)=>s+ (parseFloat(a.amount)||0),0);
-  const deductions = 0; // TODO card penalties via settings
-  const net = gross + adjustments - deductions;
+  const lateDeduction = tl.lateDeduction;
+  const overtimePay = tl.overtimePay;
+  const deductions = lateDeduction; // TODO card penalties via settings (added on top when implemented)
+  const net = gross + overtimePay + adjustments - deductions;
   return {
-    employeeId: employee.id,
-    fullName: employee.fullName,
+    employeeId: emp.id,
+    fullName: emp.fullName,
     periodLabel: `${present} hadir / ${totalDays} hari`,
     baseSalary, dailySalary, allowance,
     present, incomplete, totalDays, effectiveDays,
+    lateMinutes: tl.lateMinutes, lateDeduction,
+    overtimeMinutes: tl.overtimeMinutes, overtimePay,
     gross: Math.round(gross),
     adjustments: manualAdjustments,
     deductions,
     net: Math.round(net),
     payrollNote: payrollNote||null,
-    breakdown: { present, incomplete, gross, net, baseSalary, allowance },
+    breakdown: { present, incomplete, gross, net, baseSalary, allowance, lateMinutes: tl.lateMinutes, lateDeduction, overtimeMinutes: tl.overtimeMinutes, overtimePay, deductions },
+    details,
     calculatedAt: new Date().toISOString(),
   };
 }
