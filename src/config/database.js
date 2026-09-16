@@ -26,7 +26,8 @@ if (process.env.DATABASE_URL) {
     dialectModule: require('mysql2'),
     logging: false,
     timezone: '+07:00',
-    dialectOptions: { dateStrings: true, typeCast: true },
+    dialectOptions: { dateStrings: true, typeCast: true, connectTimeout: 10000 },
+    pool: { max: 5, min: 0, acquire: 10000, idle: 10000 },
     define: { underscored: true, charset: 'utf8mb4', collate: 'utf8mb4_unicode_ci' },
   });
 }

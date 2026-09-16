@@ -20,6 +20,10 @@ services:
     environment:
       NODE_ENV: production
       PORT: 4017
+      # Default DB_HOST to host.docker.internal when unset. NOTE: if the VPS
+      # .env explicitly sets DB_HOST=127.0.0.1 it still wins via interpolation
+      # below — change it to host.docker.internal on the VPS.
+      DB_HOST: ${DB_HOST:-host.docker.internal}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
