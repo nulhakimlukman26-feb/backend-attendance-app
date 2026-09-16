@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
+const { Op } = require('sequelize');
 const { hashPassword, comparePassword } = require('../../utils/hash');
 const db = require('../../models');
 
@@ -11,10 +12,15 @@ async function register({ username, email, password, displayName, role, activeCo
   return sanitizeUser(user);
 }
 
-async function login({ username, password }) {
-  const user = await db.User.findOne({ where: { username } });
+async function login({ username, email, password }) {
+  // Identity may be a username OR an email address.
+  const identity = String(username || email || '').trim();
+  if (!identity) throw Object.assign(new Error('Username atau email wajib diisi'), { status: 400, code: 'VALIDATION_ERROR' });
+  const user = await db.User.findOne({
+    where: { [Op.or]: [{ username: identity }, { email: identity }] },
+  });
   if (!user || !(await comparePassword(password, user.passwordHash))) {
-    throw Object.assign(new Error('Username atau password salah'), { status: 401, code: 'INVALID_CREDENTIALS' });
+    throw Object.assign(new Error('Username/email atau password salah'), { status: 401, code: 'INVALID_CREDENTIALS' });
   }
   const payload = { sub: user.id, username: user.username, role: user.role, companyId: user.activeCompanyId };
   const accessToken = jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: process.env.ACCESS_TOKEN_EXPIRES || '15m' });

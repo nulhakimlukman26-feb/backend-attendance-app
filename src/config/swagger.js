@@ -34,9 +34,11 @@ const swaggerDefinition = {
   tags: [
     { name: 'Health', description: 'Health checks' },
     { name: 'Auth', description: 'bcrypt + JWT login, refresh, session' },
+    { name: 'Users', description: 'User accounts linked to employees (email integrated with employees.email). Writes ADMIN only, read ADMIN/HR' },
     { name: 'Companies', description: 'Multi-company master' },
     { name: 'Employees', description: 'Employee registry + xlsx import' },
     { name: 'Attendance', description: 'Upload pipeline, periods, records, manual overrides' },
+    { name: 'PhotoAttendance', description: 'Selfie + GPS check-in/out with geofence, admin verification queue' },
     { name: 'Cards', description: 'Yellow/red card overrides' },
     { name: 'Settings', description: 'Per-company app settings' },
     { name: 'Departments', description: 'Departments master' },
@@ -107,6 +109,7 @@ const swaggerDefinition = {
           displayName: { type: 'string' },
           role: { type: 'string', enum: ['ADMIN', 'HR', 'MANAGER', 'STAFF'] },
           activeCompanyId: { type: 'string' },
+          employeeId: { type: 'string', description: 'Linked employees.id — email must match employees.email' },
         },
       },
       Company: {
@@ -175,6 +178,29 @@ const swaggerDefinition = {
           dataStatus: { type: 'string', example: 'No Data' },
           isManualOverride: { type: 'boolean' },
           manualReason: { type: 'string' },
+        },
+      },
+      PhotoCheckin: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', format: 'uuid' },
+          companyId: { type: 'string' },
+          employeeId: { type: 'string' },
+          employeeName: { type: 'string' },
+          type: { type: 'string', enum: ['CHECK_IN', 'CHECK_OUT'] },
+          date: { type: 'string', format: 'date' },
+          time: { type: 'string', example: '08:55' },
+          photoUrl: { type: 'string', description: 'R2 URL (null when R2 unconfigured).' },
+          latitude: { type: 'number' },
+          longitude: { type: 'number' },
+          distanceMeters: { type: 'integer', description: 'Haversine distance to office (null when office unset).' },
+          insideGeofence: { type: 'boolean' },
+          status: { type: 'string', enum: ['PENDING', 'APPROVED', 'REJECTED'] },
+          submittedBy: { type: 'string' },
+          verifiedBy: { type: 'string' },
+          verifiedAt: { type: 'string', format: 'date-time' },
+          verifyNote: { type: 'string' },
+          note: { type: 'string' },
         },
       },
       Leave: {
@@ -292,15 +318,19 @@ const swaggerDefinition = {
     },
     '/auth/login': {
       post: {
-        tags: ['Auth'], summary: 'Login → accessToken + httpOnly refresh cookie',
+        tags: ['Auth'], summary: 'Login (username OR email) → accessToken + httpOnly refresh cookie',
         security: [],
         requestBody: {
           required: true,
           content: {
             'application/json': {
               schema: {
-                type: 'object', required: ['username', 'password'],
-                properties: { username: { type: 'string' }, password: { type: 'string' } },
+                type: 'object', required: ['password'],
+                properties: {
+                  username: { type: 'string', description: 'Username atau email — salah satu dari username/email wajib diisi.' },
+                  email: { type: 'string', description: 'Alternatif dari username.' },
+                  password: { type: 'string' },
+                },
               },
             },
           },
@@ -357,6 +387,100 @@ const swaggerDefinition = {
           },
         },
         responses: { 200: { description: 'OK → { user }' }, 401: { description: 'INVALID_CREDENTIALS' } },
+      },
+    },
+    // ── Users ─────────────────────────────────────────────
+    '/users': {
+      get: {
+        tags: ['Users'], summary: 'List users + search + pagination (ADMIN/HR)',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { in: 'query', name: 'q', schema: { type: 'string' }, description: 'Search username/displayName/email.' },
+          { in: 'query', name: 'role', schema: { type: 'string', enum: ['ADMIN', 'HR', 'MANAGER', 'STAFF'] } },
+          { in: 'query', name: 'companyId', schema: { type: 'string' }, description: 'Filter by activeCompanyId.' },
+          { in: 'query', name: 'employeeId', schema: { type: 'string' } },
+          { $ref: '#/components/parameters/PageQuery' },
+          { $ref: '#/components/parameters/LimitQuery' },
+        ],
+        responses: { 200: { description: 'OK → { users }, meta { page, limit, total }' } },
+      },
+      post: {
+        tags: ['Users'], summary: 'Create user linked to employee (ADMIN)',
+        description: 'employeeId* required. Email is integrated with employees.email: omit `email` to inherit it, or send one that matches — otherwise 400 EMAIL_MISMATCH. displayName defaults to employee fullName, activeCompanyId defaults to employee company.',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object', required: ['username', 'password', 'employeeId'],
+                properties: {
+                  username: { type: 'string' }, password: { type: 'string' },
+                  email: { type: 'string' }, displayName: { type: 'string' },
+                  role: { type: 'string', enum: ['ADMIN', 'HR', 'MANAGER', 'STAFF'] },
+                  activeCompanyId: { type: 'string' }, employeeId: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: 'Created → { user }' },
+          400: { description: 'EMAIL_MISMATCH / EMAIL_REQUIRED' },
+          404: { description: 'EMPLOYEE_NOT_FOUND / COMPANY_NOT_FOUND' },
+          409: { description: 'USERNAME_EXISTS / EMAIL_EXISTS / EMPLOYEE_ALREADY_LINKED' },
+        },
+      },
+    },
+    '/users/{id}': {
+      get: {
+        tags: ['Users'], summary: 'User detail incl. linked employee (ADMIN/HR)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'OK → { user }' }, 404: { description: 'NOT_FOUND' } },
+      },
+      patch: {
+        tags: ['Users'], summary: 'Update user (ADMIN). Email change must stay in sync with linked employee email',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  displayName: { type: 'string' }, email: { type: 'string' },
+                  role: { type: 'string', enum: ['ADMIN', 'HR', 'MANAGER', 'STAFF'] },
+                  activeCompanyId: { type: 'string' }, employeeId: { type: 'string' },
+                  password: { type: 'string', description: 'Admin reset (no current password needed).' },
+                },
+              },
+            },
+          },
+        },
+        responses: { 200: { description: 'OK → { user }' }, 400: { description: 'EMAIL_MISMATCH / CANNOT_DEMOTE_SELF' } },
+      },
+      delete: {
+        tags: ['Users'], summary: 'Delete user, revoke sessions (ADMIN, not self, not last ADMIN)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'Deleted' }, 400: { description: 'CANNOT_DELETE_SELF / LAST_ADMIN' } },
+      },
+    },
+    '/users/{id}/reset-password': {
+      post: {
+        tags: ['Users'], summary: 'Reset password + revoke sessions (ADMIN)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { type: 'object', required: ['newPassword'], properties: { newPassword: { type: 'string' } } },
+            },
+          },
+        },
+        responses: { 200: { description: 'OK → { message }' }, 404: { description: 'NOT_FOUND' } },
       },
     },
     // ── Companies ───────────────────────────────────────────
@@ -679,6 +803,93 @@ const swaggerDefinition = {
         security: [{ bearerAuth: [] }],
         parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
         responses: { 200: { description: 'Deleted' } },
+      },
+    },
+    // ── Photo attendance (selfie + GPS + admin verify) ────
+    '/attendance/photo-checkin': {
+      post: {
+        tags: ['PhotoAttendance'], summary: 'Submit selfie + GPS check-in/out (any role; STAFF locked to own employee)',
+        description: 'Multipart `photo` (JPG/PNG/WEBP ≤5MB) + `latitude*`, `longitude*`, `type` (CHECK_IN|CHECK_OUT, default CHECK_IN), `date` (YYYY-MM-DD, default today Asia/Jakarta), `employeeId` (ADMIN/HR only, STAFF forced to self), `note`, `companyId`. Geofence evaluated from Settings (radius/strict/office coords): outside + strict → 422 OUT_OF_GEOFENCE. Rate limit 30/hour.',
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            'multipart/form-data': {
+              schema: {
+                type: 'object', required: ['photo', 'latitude', 'longitude'],
+                properties: {
+                  photo: { type: 'string', format: 'binary' },
+                  latitude: { type: 'number', example: -6.1754 },
+                  longitude: { type: 'number', example: 106.8272 },
+                  type: { type: 'string', enum: ['CHECK_IN', 'CHECK_OUT'] },
+                  date: { type: 'string', example: '2026-09-16' },
+                  employeeId: { type: 'string' }, note: { type: 'string' }, companyId: { type: 'string' },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: 'Created → { checkin (PENDING), geofence { distanceMeters, insideGeofence, radiusMeters }, warnings }' },
+          400: { description: 'PHOTO_REQUIRED / INVALID_PHOTO / VALIDATION_ERROR' },
+          403: { description: 'ACCOUNT_NOT_LINKED / FORBIDDEN (STAFF other employee)' },
+          409: { description: 'DUPLICATE_PENDING (masih ada pengajuan berjalan) / ALREADY_CHECKED_IN (sudah disetujui — hanya REJECTED yang boleh diajukan ulang)' },
+          422: { description: 'OUT_OF_GEOFENCE (strict mode)' },
+          429: { description: 'RATE_LIMIT (30/hour)' },
+        },
+      },
+    },
+    '/attendance/photo-checkins': {
+      get: {
+        tags: ['PhotoAttendance'], summary: 'Verification queue (?status=&type=&employeeId=&dateFrom=&dateTo=, paged; STAFF own only)',
+        security: [{ bearerAuth: [] }],
+        parameters: [
+          { $ref: '#/components/parameters/CompanyIdQuery' },
+          { in: 'query', name: 'status', schema: { type: 'string', enum: ['PENDING', 'APPROVED', 'REJECTED'] } },
+          { in: 'query', name: 'type', schema: { type: 'string', enum: ['CHECK_IN', 'CHECK_OUT'] } },
+          { in: 'query', name: 'employeeId', schema: { type: 'string' } },
+          { in: 'query', name: 'dateFrom', schema: { type: 'string' } },
+          { in: 'query', name: 'dateTo', schema: { type: 'string' } },
+          { $ref: '#/components/parameters/PageQuery' },
+          { $ref: '#/components/parameters/LimitQuery' },
+        ],
+        responses: { 200: { description: 'OK → { checkins }, meta { page, limit, total }' } },
+      },
+    },
+    '/attendance/photo-checkins/{id}': {
+      get: {
+        tags: ['PhotoAttendance'], summary: 'Photo check-in detail (STAFF own only)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'OK → { checkin }' }, 404: { description: 'NOT_FOUND' } },
+      },
+      delete: {
+        tags: ['PhotoAttendance'], summary: 'Delete record (ADMIN/HR, R2 file retained)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
+        responses: { 200: { description: 'Deleted' } },
+      },
+    },
+    '/attendance/photo-checkins/{id}/verify': {
+      post: {
+        tags: ['PhotoAttendance'], summary: 'Admin verify APPROVED|REJECTED (ADMIN/HR; APPROVED patches attendance_records if period exists)',
+        security: [{ bearerAuth: [] }],
+        parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object', required: ['decision'],
+                properties: { decision: { type: 'string', enum: ['APPROVED', 'REJECTED'] }, note: { type: 'string' } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: 'OK → { checkin, integrated }' },
+          409: { description: 'ALREADY_VERIFIED' },
+        },
       },
     },
     // ── Cards ───────────────────────────────────────────────

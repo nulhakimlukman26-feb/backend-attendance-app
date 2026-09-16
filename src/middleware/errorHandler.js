@@ -9,6 +9,9 @@ function errorHandler(err, req, res, _next) {
   if (err.message === 'Hanya file .xlsx yang diterima') {
     return res.status(400).json({ ok: false, error: { code: 'INVALID_FILE_TYPE', message: err.message } });
   }
+  if (err.message === 'Hanya foto JPG/PNG/WEBP yang diterima') {
+    return res.status(400).json({ ok: false, error: { code: 'INVALID_PHOTO_TYPE', message: err.message } });
+  }
   // Multer errors
   if (err instanceof require('multer').MulterError) {
     return res.status(400).json({ ok: false, error: { code: 'UPLOAD_ERROR', message: err.message } });

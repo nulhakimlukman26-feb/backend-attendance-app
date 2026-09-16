@@ -103,7 +103,7 @@ Login response seeds everything else. Persist `accessToken` (memory or localStor
 
 | Action | Call | Notes |
 |---|---|---|
-| Login | `POST /auth/login` `{ username, password }` → `{ accessToken, user }` | Sets 2 `refreshToken` cookies automatically. Rate-limited 20/min |
+| Login | `POST /auth/login` `{ username|email, password }` (username **atau** email) → `{ accessToken, user }` | Sets 2 `refreshToken` cookies automatically. Rate-limited 20/min |
 | Me (on app boot) | `GET /auth/me` → `{ user }` | If 401 even after refresh → redirect to login |
 | Refresh | `POST /auth/refresh` (cookie; or body `{ refreshToken }`) → `{ accessToken }` | Handled inside `api()` — never call manually except on boot |
 | Logout | `POST /auth/logout` → `{ message }` | Then clear `accessToken` + route to login |

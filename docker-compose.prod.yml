@@ -1,0 +1,31 @@
+# Production compose — VPS pulls the GHCR image built by docker-publish.yml.
+# MySQL is EXTERNAL (not in this file). The app connects via DB_* vars in .env.
+# .env must exist next to this file on the VPS (never committed to git).
+# Required .env keys: NODE_ENV=production, PORT, DB_HOST, DB_PORT, DB_USER,
+# DB_PASS, DB_NAME, JWT_SECRET, JWT_REFRESH_SECRET, CORS_ORIGIN (+ R2/SMTP as needed).
+
+name: attendance-backend
+
+services:
+  app:
+    image: ghcr.io/nulhakimlukman26-feb/backend-attendance-app:latest
+    container_name: attendance-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

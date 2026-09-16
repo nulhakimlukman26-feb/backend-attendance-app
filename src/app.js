@@ -33,9 +33,11 @@ function createApp() {
 
   // Mount routes
   app.use('/api/v1/auth', require('./modules/auth/auth.routes'));
+  app.use('/api/v1/users', require('./modules/users/users.routes'));
   app.use('/api/v1/companies', require('./modules/companies/companies.routes'));
   app.use('/api/v1/employees', require('./modules/employees/employees.routes'));
   app.use('/api/v1/attendance', require('./modules/attendance/attendance.routes'));
+  app.use('/api/v1/attendance', require('./modules/photoAttendance/photoAttendance.routes'));
   app.use('/api/v1/cards', require('./modules/cards/cards.routes'));
   app.use('/api/v1/settings', require('./modules/settings/settings.routes'));
   app.use('/api/v1/departments', require('./modules/departments/departments.routes'));

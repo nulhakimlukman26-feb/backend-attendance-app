@@ -14,9 +14,9 @@ exports.register = async (req, res, next) => {
 
 exports.login = async (req, res, next) => {
   try {
-    const { username, password } = req.body;
-    if (!username || !password) return res.status(400).json({ ok:false, error:{code:'VALIDATION_ERROR', message:'Username dan password wajib diisi'}});
-    const { accessToken, refreshRaw, user } = await authService.login({ username, password });
+    const { username, email, password } = req.body;
+    if ((!username && !email) || !password) return res.status(400).json({ ok:false, error:{code:'VALIDATION_ERROR', message:'Username/email dan password wajib diisi'}});
+    const { accessToken, refreshRaw, user } = await authService.login({ username, email, password });
     res.cookie('refreshToken', refreshRaw, {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
