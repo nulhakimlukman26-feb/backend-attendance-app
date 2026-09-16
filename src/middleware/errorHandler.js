@@ -1,7 +1,11 @@
 // Global error handler - must have 4 args
 // eslint-disable-next-line no-unused-vars
 function errorHandler(err, req, res, _next) {
-  console.error('[error]', err.message, err.stack?.split('\n')[1] || '');
+  // Sequelize wraps the real driver error in .parent/.original — log it so
+  // DB connection failures (ECONNREFUSED, Access denied, Unknown database…)
+  // are visible instead of just a stack line.
+  const rootMsg = err?.parent?.message || err?.original?.message || err?.cause?.message;
+  console.error('[error]', err.message, rootMsg ? `| caused by: ${rootMsg}` : '', err.stack?.split('\n').slice(0, 4).join(' | ') || '');
 
   if (err.code === 'LIMIT_FILE_SIZE' || err.message?.includes('File too large')) {
     return res.status(413).json({ ok: false, error: { code: 'FILE_TOO_LARGE', message: 'File melebihi batas 10MB' } });

@@ -26,7 +26,9 @@ async function start() {
       console.log(`   R2 configured: ${!!(process.env.R2_ACCOUNT_ID && process.env.R2_ACCESS_KEY_ID)}`);
     });
   } catch (err) {
-    console.error('❌ Failed to start server:', err.message);
+    const rootMsg = err?.parent?.message || err?.original?.message || err?.cause?.message;
+    console.error('❌ Failed to start server:', err.message, rootMsg ? `| caused by: ${rootMsg}` : '');
+    console.error('   DB target was', `${process.env.DB_USER}@${process.env.DB_HOST}:${process.env.DB_PORT}/${process.env.DB_NAME}`);
     // Still start server without DB for health checks (optional)
     app.listen(PORT, () => {
       console.log(`⚠️  API on :${PORT} (DB not connected) — ${err.message}`);

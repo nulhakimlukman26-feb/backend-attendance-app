@@ -10,6 +10,11 @@ const { swaggerSpec } = require('./config/swagger');
 function createApp() {
   const app = express();
 
+  // Behind reverse proxy / Docker (Nginx, Coolify, etc.) the proxy sets
+  // X-Forwarded-For. Trust the first proxy so req.ip + express-rate-limit
+  // resolve the real client IP instead of throwing ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+  app.set('trust proxy', 1);
+
   app.use(helmet({ contentSecurityPolicy: false }));
   app.use(cors({
     origin: process.env.CORS_ORIGIN ? process.env.CORS_ORIGIN.split(',').map(s => s.trim()) : true,
