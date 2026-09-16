@@ -21,6 +21,24 @@ function jakartaTime() {
   return new Date().toLocaleTimeString('en-GB', { timeZone: 'Asia/Jakarta', hour: '2-digit', minute: '2-digit' });
 }
 
+// Same rule as the xlsx parser (utils/attendanceParser.js):
+// both sides present -> Hadir/Valid, single side -> Data Tidak Lengkap.
+function photoRowStatus(checkIn, checkOut) {
+  if (checkIn && checkOut) return { status: 'Hadir', dataStatus: 'Valid' };
+  return { status: 'Data Tidak Lengkap', dataStatus: 'Data Tidak Lengkap' };
+}
+
+function monthBounds(periodKey) {
+  const [year, month] = periodKey.split('-').map(Number);
+  const label = new Date(year, month - 1, 1).toLocaleDateString('id-ID', { month: 'long', year: 'numeric' });
+  const lastDay = new Date(year, month, 0).getDate();
+  return {
+    label: label.charAt(0).toUpperCase() + label.slice(1),
+    periodStart: `${periodKey}-01`,
+    periodEnd: `${periodKey}-${String(lastDay).padStart(2, '0')}`,
+  };
+}
+
 function resolveCompanyId(req) {
   return (req.body && req.body.companyId) || req.query.companyId || req.user.companyId || req.headers['x-company-id'];
 }
@@ -234,29 +252,66 @@ exports.verify = async (req, res, next) => {
     rec.verifiedAt = new Date();
     rec.verifyNote = note || null;
 
-    // On approval, patch the day's attendance_records row (if the period exists),
-    // mirroring manual-override behavior so summaries pick it up.
+    // On approval the photo MUST land in attendance_records: find-or-create the
+    // month period and the day row (transactional), then set the approved side
+    // and recompute status with the same rule as the xlsx parser.
     let integrated = false;
+    let createdPeriod = false;
+    let createdRecord = false;
     if (decision === 'APPROVED') {
-      const periodKey = String(rec.date).slice(0, 7); // YYYY-MM
-      const period = await db.AttendancePeriod.findOne({ where: { companyId: rec.companyId, key: periodKey } });
-      if (period) {
-        const row = await db.AttendanceRecord.findOne({
-          where: { periodId: period.id, employeeId: rec.employeeId, date: rec.date },
+      const t = await db.sequelize.transaction();
+      try {
+        const periodKey = String(rec.date).slice(0, 7); // YYYY-MM
+        const bounds = monthBounds(periodKey);
+        const [period, isNewPeriod] = await db.AttendancePeriod.findOrCreate({
+          where: { companyId: rec.companyId, key: periodKey },
+          defaults: {
+            companyId: rec.companyId,
+            key: periodKey,
+            label: bounds.label,
+            periodStart: bounds.periodStart,
+            periodEnd: bounds.periodEnd,
+            uploadedBy: req.user.sub,
+          },
+          transaction: t,
         });
-        if (row) {
-          const hhmm = rec.time || jakartaTime();
-          if (rec.type === 'CHECK_IN') row.checkIn = hhmm;
-          else row.checkOut = hhmm;
-          row.isManualOverride = true;
-          row.manualReason = `Foto ${rec.type} terverifikasi`;
-          await row.save();
-          integrated = true;
+        createdPeriod = isNewPeriod;
+        let row = await db.AttendanceRecord.findOne({
+          where: { periodId: period.id, employeeId: rec.employeeId, date: rec.date },
+          transaction: t,
+        });
+        if (!row) {
+          row = db.AttendanceRecord.build({
+            periodId: period.id,
+            companyId: rec.companyId,
+            employeeId: rec.employeeId,
+            date: rec.date,
+            rawTimestamps: [],
+          });
+          createdRecord = true;
         }
+        const hhmm = rec.time || jakartaTime();
+        if (rec.type === 'CHECK_IN') row.checkIn = hhmm;
+        else row.checkOut = hhmm;
+        row.isManualOverride = true;
+        row.manualReason = `Foto ${rec.type} terverifikasi`;
+        Object.assign(row, photoRowStatus(row.checkIn, row.checkOut));
+        await row.save({ transaction: t });
+        rec.status = decision;
+        rec.verifiedBy = req.user.sub;
+        rec.verifiedAt = new Date();
+        rec.verifyNote = note || null;
+        await rec.save({ transaction: t });
+        await t.commit();
+        integrated = true;
+      } catch (txErr) {
+        await t.rollback();
+        throw txErr;
       }
+    } else {
+      await rec.save();
     }
-    await rec.save();
-    res.json({ ok: true, data: { checkin: rec, integrated } });
+    res.json({ ok: true, data: { checkin: rec, integrated, created: { period: createdPeriod, record: createdRecord } } });
   } catch (e) { next(e); }
 };
 

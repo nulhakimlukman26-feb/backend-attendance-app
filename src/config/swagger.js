@@ -872,7 +872,8 @@ const swaggerDefinition = {
     },
     '/attendance/photo-checkins/{id}/verify': {
       post: {
-        tags: ['PhotoAttendance'], summary: 'Admin verify APPROVED|REJECTED (ADMIN/HR; APPROVED patches attendance_records if period exists)',
+        tags: ['PhotoAttendance'], summary: 'Admin verify APPROVED|REJECTED (ADMIN/HR; APPROVED always lands in attendance_records)',
+        description: 'APPROVED auto-creates the YYYY-MM period + day row when missing (status follows xlsx rule: both sides Hadir/Valid, single side Data Tidak Lengkap), then sets checkIn/checkOut + override flag. REJECTED writes nothing to attendance tables.',
         security: [{ bearerAuth: [] }],
         parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
         requestBody: {
