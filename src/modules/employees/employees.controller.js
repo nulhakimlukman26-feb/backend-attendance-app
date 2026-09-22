@@ -34,6 +34,19 @@ function parseExcelDate(val) {
   return null;
 }
 
+function normalizeEmploymentStatus(val) {
+  const s = String(val ?? '').trim();
+  if (!s) return 'Active';
+  const lower = s.toLowerCase();
+  if (['aktif', 'active'].includes(lower)) return 'Active';
+  if (lower.includes('resign') || lower === 'keluar' || lower === 'nonaktif') return 'Resigned';
+  if (['kontrak', 'contract'].includes(lower)) return 'Contract';
+  if (['probation', 'percobaan'].includes(lower)) return 'Probation';
+  if (['tetap', 'permanent', 'pkwt', 'pksi'].includes(lower)) return 'Permanent';
+  if (['harian', 'daily', 'freelance', 'part time', 'parttime'].includes(lower)) return 'Daily';
+  return s;
+}
+
 exports.list = async (req, res, next) => {
   try {
     const companyId = req.query.companyId || req.user.companyId || req.companyId;
@@ -93,24 +106,51 @@ exports.importXlsx = async (req, res, next) => {
       const row = rows[r];
       if (!row || row.every(c=>!String(c).trim())) continue;
       const obj={};
-      headers.forEach((h,i)=>{ obj[h]=row[i]; });
-      const fullName = obj['Nama']||obj['nama']||obj['fullName']||obj['full_name']||obj['Full Name']||'';
+      headers.forEach((h,i)=>{ obj[String(h).trim().toLowerCase()]=row[i]; });
+      const pick=(...keys)=>{
+        for(const k of keys){
+          const v=obj[String(k).trim().toLowerCase()];
+          if(v!==undefined && v!==null && String(v).trim()!=='') return v;
+        }
+        return '';
+      };
+      const fullName = pick('Nama Lengkap','Nama','fullName','full_name','Full Name');
       if (!String(fullName).trim()) continue;
-      nextIdNum++;
-      const id = obj['ID']||obj['id']||obj['NIK']||`EMP-${String(nextIdNum).padStart(4,'0')}`;
-      // check duplicate
-      if (toCreate.some(x=>x.id===id)) continue;
+      const rawId = pick('ID Karyawan','ID','id','Employee ID','NIK');
+      let id = String(rawId).trim();
+      if (id) {
+        if (toCreate.some(x=>x.id===id)) continue;
+      } else {
+        let candidate;
+        do { nextIdNum++; candidate = `EMP-${String(nextIdNum).padStart(4,'0')}`; }
+        while (toCreate.some(x=>x.id===candidate) || existing.some(x=>x.id===candidate));
+        id = candidate;
+      }
+      const num = (v, fallback) => { const n = parseFloat(v); return Number.isFinite(n) ? n : fallback; };
+      const text = (v) => { const s = String(v??'').trim(); return s || null; };
       toCreate.push({
-        id: String(id).trim(),
+        id,
         companyId,
         fullName: String(fullName).trim(),
-        department: String(obj['Department']||obj['department']||obj['Departemen']||'WAREHOUSE').trim()||'WAREHOUSE',
-        jobTitle: String(obj['Jabatan']||obj['jobTitle']||obj['Posisi']||'Staf').trim()||'Staf',
-        email: String(obj['Email']||obj['email']||'').trim()||null,
-        phone: String(obj['Phone']||obj['phone']||obj['Telepon']||'').trim()||null,
-        joinDate: parseExcelDate(obj['Join Date']||obj['joinDate']||obj['Tanggal Masuk']||''),
-        employmentStatus: String(obj['Status']||'Active').trim()||'Active',
-        baseSalary: parseFloat(obj['Gaji']||obj['baseSalary']||1755000)||1755000,
+        department: pick('Departemen','Department','department') || 'WAREHOUSE',
+        jobTitle: pick('Jabatan','Posisi','jobTitle') || 'Staf',
+        email: text(pick('Email','email')),
+        phone: text(pick('No. HP','Phone','phone','Telepon','No HP')),
+        joinDate: parseExcelDate(pick('Tanggal Join','Join Date','joinDate','Tanggal Masuk')),
+        birthDate: parseExcelDate(pick('Tanggal Lahir','Birth Date','birthDate','Tanggal Kelahiran')),
+        contractEndDate: parseExcelDate(pick('Tanggal Akhir Kontrak','Contract End Date','contractEndDate')),
+        employmentStatus: normalizeEmploymentStatus(pick('Status Karyawan','Status','employmentStatus','Status Kerja')),
+        baseSalary: num(pick('Gaji Pokok','Gaji','baseSalary'), 1755000),
+        dailySalary: num(pick('Upah Harian','dailySalary'), 85000),
+        bankName: text(pick('Bank','bankName')),
+        bankAccountNumber: text(pick('No. Rekening','No Rekening','bankAccountNumber')),
+        bankAccountHolder: text(pick('Atas Nama Rekening','bankAccountHolder')),
+        nik: text(pick('NIK','nik')),
+        npwp: text(pick('NPWP','npwp')),
+        bpjsKesehatan: text(pick('BPJS Kesehatan','bpjsKesehatan')),
+        bpjsKetenagakerjaan: text(pick('BPJS Ketenagakerjaan','bpjsKetenagakerjaan')),
+        shift: pick('Jadwal / Shift','Jadwal','Shift','shift') || 'Normal',
+        notes: text(pick('Catatan','notes')),
       });
     }
     if (toCreate.length===0) return res.status(400).json({ ok:false, error:{code:'NO_DATA', message:'Tidak ada data karyawan valid di file'}});
