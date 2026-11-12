@@ -71,9 +71,11 @@ jobs:
       - name: Attest platform image
         uses: actions/attest-build-provenance@v2
         with:
-          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}-${{ matrix.arch }}
+          subject-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
           subject-digest: ${{ steps.push.outputs.digest }}
-          push-to-registry: true
+          # Store provenance as a GitHub artifact attestation, not an OCI referrer
+          # in GHCR (which fails for some registry/package configurations).
+          push-to-registry: false
 
   publish-manifest:
     name: Publish multi-platform manifest
