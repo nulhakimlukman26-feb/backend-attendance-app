@@ -16,11 +16,12 @@ const checkinLimiter = rateLimit({
 });
 
 // Employee submits selfie + GPS (any authenticated role; STAFF locked to own employee).
+// Auto-approved: recorded and integrated into attendance_records immediately.
 router.post('/photo-checkin', authenticate, checkinLimiter, photoUpload.single('photo'), ctrl.checkin);
-// Admin/HR verification queue (STAFF sees own only).
+// Photo attendance list (STAFF sees own only).
 router.get('/photo-checkins', authenticate, ctrl.list);
 router.get('/photo-checkins/:id', authenticate, ctrl.getOne);
-// Admin decision: APPROVED integrates into attendance_records when the period exists.
+// Legacy: only for PENDING rows created before auto-approval.
 router.post('/photo-checkins/:id/verify', authenticate, authorize('ADMIN', 'HR'), validate(ctrl.verifySchema), ctrl.verify);
 router.delete('/photo-checkins/:id', authenticate, authorize('ADMIN', 'HR'), ctrl.remove);
 

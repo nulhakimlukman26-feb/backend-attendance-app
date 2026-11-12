@@ -43,6 +43,49 @@ function resolveCompanyId(req) {
   return (req.body && req.body.companyId) || req.query.companyId || req.user.companyId || req.headers['x-company-id'];
 }
 
+// Find-or-create the YYYY-MM period + the employee's day row, then set the
+// photo's side (CHECK_IN/CHECK_OUT) and recompute status with the same rule as
+// the xlsx parser. Used by both auto-approved submits and manual verification.
+async function applyPhotoToAttendance(rec, userId, transaction) {
+  const periodKey = String(rec.date).slice(0, 7); // YYYY-MM
+  const bounds = monthBounds(periodKey);
+  const [period, createdPeriod] = await db.AttendancePeriod.findOrCreate({
+    where: { companyId: rec.companyId, key: periodKey },
+    defaults: {
+      companyId: rec.companyId,
+      key: periodKey,
+      label: bounds.label,
+      periodStart: bounds.periodStart,
+      periodEnd: bounds.periodEnd,
+      uploadedBy: userId,
+    },
+    transaction,
+  });
+  let row = await db.AttendanceRecord.findOne({
+    where: { periodId: period.id, employeeId: rec.employeeId, date: rec.date },
+    transaction,
+  });
+  let createdRecord = false;
+  if (!row) {
+    row = db.AttendanceRecord.build({
+      periodId: period.id,
+      companyId: rec.companyId,
+      employeeId: rec.employeeId,
+      date: rec.date,
+      rawTimestamps: [],
+    });
+    createdRecord = true;
+  }
+  const hhmm = rec.time || jakartaTime();
+  if (rec.type === 'CHECK_IN') row.checkIn = hhmm;
+  else row.checkOut = hhmm;
+  row.isManualOverride = true;
+  row.manualReason = `Foto ${rec.type} tercatat`;
+  Object.assign(row, photoRowStatus(row.checkIn, row.checkOut));
+  await row.save({ transaction });
+  return { createdPeriod, createdRecord };
+}
+
 // Minimal magic-bytes check (multer already filters mime + extension).
 function photoMagicOk(buffer, mimetype) {
   if (!buffer || buffer.length < 12) return false;
@@ -120,9 +163,9 @@ exports.checkin = async (req, res, next) => {
     });
     if (existing) {
       if (existing.status === 'PENDING') {
-        return res.status(409).json({ ok: false, error: { code: 'DUPLICATE_PENDING', message: `Sudah ada ${type} PENDING pada ${date} — tunggu verifikasi admin` } });
+        return res.status(409).json({ ok: false, error: { code: 'DUPLICATE_PENDING', message: `Sudah ada ${type} PENDING pada ${date}` } });
       }
-      return res.status(409).json({ ok: false, error: { code: 'ALREADY_CHECKED_IN', message: `Sudah ada ${type} yang disetujui pada ${date}` } });
+      return res.status(409).json({ ok: false, error: { code: 'ALREADY_CHECKED_IN', message: `Sudah ada ${type} yang tercatat pada ${date}` } });
     }
 
     // Geofence evaluation against company settings (before storing anything).
@@ -156,27 +199,43 @@ exports.checkin = async (req, res, next) => {
     const photoUrl = await uploadToR2(req.file.buffer, key, req.file.mimetype);
     if (!photoUrl) warnings.push('R2 belum dikonfigurasi — foto tidak tersimpan permanen');
 
-    const checkin = await db.PhotoAttendance.create({
-      companyId,
-      employeeId,
-      employeeName: employee.fullName,
-      type,
-      date,
-      time: jakartaTime(),
-      photoUrl,
-      latitude,
-      longitude,
-      distanceMeters,
-      insideGeofence,
-      status: 'PENDING',
-      submittedBy: req.user.sub,
-      note: req.body.note ? String(req.body.note).slice(0, 255) : null,
-    });
+    // No admin approval: the submission is recorded immediately as APPROVED and
+    // lands in attendance_records in the same transaction.
+    const t = await db.sequelize.transaction();
+    let checkin;
+    let integration;
+    try {
+      checkin = await db.PhotoAttendance.create({
+        companyId,
+        employeeId,
+        employeeName: employee.fullName,
+        type,
+        date,
+        time: jakartaTime(),
+        photoUrl,
+        latitude,
+        longitude,
+        distanceMeters,
+        insideGeofence,
+        status: 'APPROVED',
+        submittedBy: req.user.sub,
+        verifiedAt: new Date(),
+        verifyNote: 'Tercatat otomatis (tanpa verifikasi admin)',
+        note: req.body.note ? String(req.body.note).slice(0, 255) : null,
+      }, { transaction: t });
+      integration = await applyPhotoToAttendance(checkin, req.user.sub, t);
+      await t.commit();
+    } catch (txErr) {
+      await t.rollback();
+      throw txErr;
+    }
 
     res.status(201).json({
       ok: true,
       data: {
         checkin,
+        integrated: true,
+        created: { period: integration.createdPeriod, record: integration.createdRecord },
         geofence: {
           distanceMeters,
           insideGeofence,
@@ -252,51 +311,14 @@ exports.verify = async (req, res, next) => {
     rec.verifiedAt = new Date();
     rec.verifyNote = note || null;
 
-    // On approval the photo MUST land in attendance_records: find-or-create the
-    // month period and the day row (transactional), then set the approved side
-    // and recompute status with the same rule as the xlsx parser.
+    // Kept for legacy PENDING rows; new submissions are auto-approved.
     let integrated = false;
     let createdPeriod = false;
     let createdRecord = false;
     if (decision === 'APPROVED') {
       const t = await db.sequelize.transaction();
       try {
-        const periodKey = String(rec.date).slice(0, 7); // YYYY-MM
-        const bounds = monthBounds(periodKey);
-        const [period, isNewPeriod] = await db.AttendancePeriod.findOrCreate({
-          where: { companyId: rec.companyId, key: periodKey },
-          defaults: {
-            companyId: rec.companyId,
-            key: periodKey,
-            label: bounds.label,
-            periodStart: bounds.periodStart,
-            periodEnd: bounds.periodEnd,
-            uploadedBy: req.user.sub,
-          },
-          transaction: t,
-        });
-        createdPeriod = isNewPeriod;
-        let row = await db.AttendanceRecord.findOne({
-          where: { periodId: period.id, employeeId: rec.employeeId, date: rec.date },
-          transaction: t,
-        });
-        if (!row) {
-          row = db.AttendanceRecord.build({
-            periodId: period.id,
-            companyId: rec.companyId,
-            employeeId: rec.employeeId,
-            date: rec.date,
-            rawTimestamps: [],
-          });
-          createdRecord = true;
-        }
-        const hhmm = rec.time || jakartaTime();
-        if (rec.type === 'CHECK_IN') row.checkIn = hhmm;
-        else row.checkOut = hhmm;
-        row.isManualOverride = true;
-        row.manualReason = `Foto ${rec.type} terverifikasi`;
-        Object.assign(row, photoRowStatus(row.checkIn, row.checkOut));
-        await row.save({ transaction: t });
+        ({ createdPeriod, createdRecord } = await applyPhotoToAttendance(rec, req.user.sub, t));
         rec.status = decision;
         rec.verifiedBy = req.user.sub;
         rec.verifiedAt = new Date();

@@ -805,11 +805,11 @@ const swaggerDefinition = {
         responses: { 200: { description: 'Deleted' } },
       },
     },
-    // ── Photo attendance (selfie + GPS + admin verify) ────
+    // ── Photo attendance (selfie + GPS, auto-approved) ────
     '/attendance/photo-checkin': {
       post: {
-        tags: ['PhotoAttendance'], summary: 'Submit selfie + GPS check-in/out (any role; STAFF locked to own employee)',
-        description: 'Multipart `photo` (JPG/PNG/WEBP ≤5MB) + `latitude*`, `longitude*`, `type` (CHECK_IN|CHECK_OUT, default CHECK_IN), `date` (YYYY-MM-DD, default today Asia/Jakarta), `employeeId` (ADMIN/HR only, STAFF forced to self), `note`, `companyId`. Geofence evaluated from Settings (radius/strict/office coords): outside + strict → 422 OUT_OF_GEOFENCE. Rate limit 30/hour.',
+        tags: ['PhotoAttendance'], summary: 'Submit selfie + GPS check-in/out (auto-approved, no admin verification)',
+        description: 'Multipart `photo` (JPG/PNG/WEBP ≤5MB) + `latitude*`, `longitude*`, `type` (CHECK_IN|CHECK_OUT, default CHECK_IN), `date` (YYYY-MM-DD, default today Asia/Jakarta), `employeeId` (ADMIN/HR only, STAFF forced to self), `note`, `companyId`. The submission is recorded as APPROVED and written to attendance_records immediately (no approval step). Geofence evaluated from Settings (radius/strict/office coords): outside + strict → 422 OUT_OF_GEOFENCE. Rate limit 30/hour.',
         security: [{ bearerAuth: [] }],
         requestBody: {
           required: true,
@@ -830,10 +830,10 @@ const swaggerDefinition = {
           },
         },
         responses: {
-          201: { description: 'Created → { checkin (PENDING), geofence { distanceMeters, insideGeofence, radiusMeters }, warnings }' },
+          201: { description: 'Created → { checkin (APPROVED, langsung tercatat di attendance_records), integrated, created { period, record }, geofence { distanceMeters, insideGeofence, radiusMeters }, warnings }' },
           400: { description: 'PHOTO_REQUIRED / INVALID_PHOTO / VALIDATION_ERROR' },
           403: { description: 'ACCOUNT_NOT_LINKED / FORBIDDEN (STAFF other employee)' },
-          409: { description: 'DUPLICATE_PENDING (masih ada pengajuan berjalan) / ALREADY_CHECKED_IN (sudah disetujui — hanya REJECTED yang boleh diajukan ulang)' },
+          409: { description: 'DUPLICATE_PENDING (legacy row masih menunggu) / ALREADY_CHECKED_IN (sudah tercatat — hanya REJECTED yang boleh diajukan ulang)' },
           422: { description: 'OUT_OF_GEOFENCE (strict mode)' },
           429: { description: 'RATE_LIMIT (30/hour)' },
         },
@@ -841,7 +841,7 @@ const swaggerDefinition = {
     },
     '/attendance/photo-checkins': {
       get: {
-        tags: ['PhotoAttendance'], summary: 'Verification queue (?status=&type=&employeeId=&dateFrom=&dateTo=, paged; STAFF own only)',
+        tags: ['PhotoAttendance'], summary: 'Photo attendance submissions (?status=&type=&employeeId=&dateFrom=&dateTo=, paged; STAFF own only)',
         security: [{ bearerAuth: [] }],
         parameters: [
           { $ref: '#/components/parameters/CompanyIdQuery' },
@@ -872,8 +872,8 @@ const swaggerDefinition = {
     },
     '/attendance/photo-checkins/{id}/verify': {
       post: {
-        tags: ['PhotoAttendance'], summary: 'Admin verify APPROVED|REJECTED (ADMIN/HR; APPROVED always lands in attendance_records)',
-        description: 'APPROVED auto-creates the YYYY-MM period + day row when missing (status follows xlsx rule: both sides Hadir/Valid, single side Data Tidak Lengkap), then sets checkIn/checkOut + override flag. REJECTED writes nothing to attendance tables.',
+        tags: ['PhotoAttendance'], summary: 'Admin verify APPROVED|REJECTED for legacy PENDING rows (ADMIN/HR)',
+        description: 'Legacy endpoint: new submissions are auto-approved and no longer need verification. APPROVED auto-creates the YYYY-MM period + day row when missing (status follows xlsx rule: both sides Hadir/Valid, single side Data Tidak Lengkap), then sets checkIn/checkOut + override flag. REJECTED writes nothing to attendance tables.',
         security: [{ bearerAuth: [] }],
         parameters: [{ in: 'path', name: 'id', required: true, schema: { type: 'string' } }],
         requestBody: {

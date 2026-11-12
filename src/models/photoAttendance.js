@@ -1,5 +1,5 @@
 'use strict';
-// Photo-based attendance check-in/out with GPS + admin verification.
+// Photo-based attendance check-in/out with GPS (auto-approved, no admin verification).
 module.exports = (sequelize, DataTypes) => {
   const PhotoAttendance = sequelize.define('PhotoAttendance', {
     id: { type: DataTypes.STRING, primaryKey: true, defaultValue: DataTypes.UUIDV4 },
