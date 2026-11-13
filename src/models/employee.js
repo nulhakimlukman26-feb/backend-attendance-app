@@ -13,6 +13,7 @@ module.exports = (sequelize, DataTypes) => {
     birthDate: { type: DataTypes.DATEONLY, field: 'birth_date' },
     joinDate: { type: DataTypes.DATEONLY, field: 'join_date' },
     employmentStatus: { type: DataTypes.STRING, defaultValue: 'Active', field: 'employment_status' },
+    employeeStatus: { type: DataTypes.STRING, defaultValue: 'Aktif', field: 'employee_status' },
     wfhEnabled: { type: DataTypes.BOOLEAN, defaultValue: false, field: 'wfh_enabled' },
     probationStartDate: { type: DataTypes.DATEONLY, field: 'probation_start_date' },
     probationEndDate: { type: DataTypes.DATEONLY, field: 'probation_end_date' },
