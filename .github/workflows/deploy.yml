@@ -50,6 +50,9 @@ jobs:
             exit 1
           fi
 
+      - name: Validate production compose file
+        run: test -s docker-compose.prod.yml
+
       - name: Copy compose file to VPS
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -101,7 +104,7 @@ jobs:
 
             echo "→ Health check (12 × 5s)…"
             for i in $(seq 1 12); do
-              if curl -fsS http://localhost:3000/health; then
+              if curl -fsS http://localhost:4017/health; then
                 echo ""
                 echo "✅ Deploy healthy"
                 break

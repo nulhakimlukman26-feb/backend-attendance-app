@@ -1,0 +1,30 @@
+# Production compose uses the GHCR image published by docker-publish.yml.
+# MySQL is external; configure the connection in the VPS .env file.
+name: attendance-backend
+
+services:
+  app:
+    image: ${IMAGE:?IMAGE must be set to the GHCR image}
+    container_name: attendance-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      PORT: 4017
+      DB_HOST: ${DB_HOST:-host.docker.internal}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "4017:4017"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4017/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
