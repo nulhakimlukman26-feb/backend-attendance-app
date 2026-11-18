@@ -21,7 +21,8 @@ router.post('/photo-checkin', authenticate, checkinLimiter, photoUpload.single('
 // Photo attendance list (STAFF sees own only).
 router.get('/photo-checkins', authenticate, ctrl.list);
 router.get('/photo-checkins/:id', authenticate, ctrl.getOne);
-// Legacy: only for PENDING rows created before auto-approval.
+// Admin/HR can change a photo submission between approved and rejected states.
+router.post('/photo-checkins/bulk-verify', authenticate, authorize('ADMIN', 'HR'), validate(ctrl.bulkVerifySchema), ctrl.bulkVerify);
 router.post('/photo-checkins/:id/verify', authenticate, authorize('ADMIN', 'HR'), validate(ctrl.verifySchema), ctrl.verify);
 router.delete('/photo-checkins/:id', authenticate, authorize('ADMIN', 'HR'), ctrl.remove);
 

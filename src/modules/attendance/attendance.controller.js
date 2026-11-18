@@ -137,11 +137,12 @@ exports.upload = async (req, res, next) => {
 
       // Build records
       const recordsToCreate=[];
+      const recordsByEmployeeDate = new Map();
       for (const emp of parsed.employees) {
         const eid = employeeMap.get(emp.name.trim().toLowerCase());
         if (!eid) continue;
         for (const rec of emp.records) {
-          recordsToCreate.push({
+          const row = {
             periodId: period.id,
             companyId,
             employeeId: eid,
@@ -151,7 +152,51 @@ exports.upload = async (req, res, next) => {
             rawTimestamps: rec.rawTimestamps,
             status: rec.status,
             dataStatus: rec.dataStatus,
-          });
+          };
+          recordsToCreate.push(row);
+          recordsByEmployeeDate.set(`${eid}|${row.date}`, row);
+        }
+      }
+
+      // XLSX uploads replace the monthly attendance rows, so overlay approved
+      // photo check-ins before inserting the rebuilt period. This keeps photo
+      // times in the same records consumed by Detail and Rekap even when the
+      // uploaded spreadsheet contains no photo-derived timestamps.
+      const periodStartDate = periodStart ? periodStart.toISOString().slice(0,10) : `${periodKey}-01`;
+      const periodEndDate = periodEnd ? periodEnd.toISOString().slice(0,10) : null;
+      if (/^\d{4}-\d{2}$/.test(periodKey) && periodEndDate) {
+        const approvedPhotos = await db.PhotoAttendance.findAll({
+          where: {
+            companyId,
+            status: 'APPROVED',
+            date: { [Op.between]: [periodStartDate, periodEndDate] },
+          },
+          order: [['createdAt', 'ASC']],
+          transaction: t,
+        });
+        for (const photo of approvedPhotos) {
+          const key = `${photo.employeeId}|${photo.date}`;
+          let row = recordsByEmployeeDate.get(key);
+          if (!row) {
+            row = {
+              periodId: period.id,
+              companyId,
+              employeeId: photo.employeeId,
+              date: photo.date,
+              checkIn: null,
+              checkOut: null,
+              rawTimestamps: [],
+            };
+            recordsByEmployeeDate.set(key, row);
+            recordsToCreate.push(row);
+          }
+          if (photo.type === 'CHECK_IN') row.checkIn = photo.time || null;
+          else if (photo.type === 'CHECK_OUT') row.checkOut = photo.time || null;
+          row.isManualOverride = true;
+          row.manualReason = `Foto ${photo.type} tercatat`;
+          Object.assign(row, row.checkIn && row.checkOut
+            ? { status: 'Hadir', dataStatus: 'Valid' }
+            : { status: 'Data Tidak Lengkap', dataStatus: 'Data Tidak Lengkap' });
         }
       }
 

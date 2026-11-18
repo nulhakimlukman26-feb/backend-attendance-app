@@ -12,6 +12,11 @@ const verifySchema = z.object({
   decision: z.enum(['APPROVED', 'REJECTED']),
   note: z.string().max(500).optional(),
 });
+const bulkVerifySchema = z.object({
+  ids: z.array(z.string().min(1)).min(1).max(500),
+  decision: z.enum(['APPROVED', 'REJECTED']),
+  note: z.string().max(500).optional(),
+});
 
 function jakartaToday() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Jakarta' });
@@ -84,6 +89,97 @@ async function applyPhotoToAttendance(rec, userId, transaction) {
   Object.assign(row, photoRowStatus(row.checkIn, row.checkOut));
   await row.save({ transaction });
   return { createdPeriod, createdRecord };
+}
+
+function attendanceFromRawTimestamps(row) {
+  const stamps = Array.isArray(row?.rawTimestamps) ? row.rawTimestamps.map(String).filter(Boolean) : [];
+  if (stamps.length >= 2) {
+    return { checkIn: stamps[0], checkOut: stamps[stamps.length - 1], status: 'Hadir', dataStatus: 'Valid' };
+  }
+  if (stamps.length === 1) {
+    const match = stamps[0].match(/^(\d{1,2}):(\d{2})/);
+    const minutes = match ? Number(match[1]) * 60 + Number(match[2]) : 0;
+    const isCheckout = minutes >= 14 * 60;
+    return {
+      checkIn: isCheckout ? null : stamps[0],
+      checkOut: isCheckout ? stamps[0] : null,
+      status: 'Data Tidak Lengkap',
+      dataStatus: 'Data Tidak Lengkap',
+    };
+  }
+  return { checkIn: null, checkOut: null, status: 'Tidak Hadir', dataStatus: 'No Data' };
+}
+
+// Rebuild a day from its non-photo source, then overlay the currently approved
+// photo submissions. This makes approve/reject reversible without losing the
+// XLSX timestamps or a saved manual override.
+async function rebuildPhotoAttendanceDay(rec, transaction) {
+  const periodKey = String(rec.date).slice(0, 7);
+  const period = await db.AttendancePeriod.findOne({
+    where: { companyId: rec.companyId, key: periodKey },
+    transaction,
+  });
+  if (!period) return false;
+
+  let row = await db.AttendanceRecord.findOne({
+    where: { periodId: period.id, employeeId: rec.employeeId, date: rec.date },
+    transaction,
+    lock: transaction.LOCK.UPDATE,
+  });
+  const manual = await db.ManualAttendanceOverride.findOne({
+    where: { companyId: rec.companyId, employeeId: rec.employeeId, date: rec.date },
+    transaction,
+  });
+  const savedManual = manual ? {
+    checkIn: manual.checkIn || null,
+    checkOut: manual.checkOut || null,
+    status: manual.checkIn && manual.checkOut ? 'Hadir' : (manual.checkIn || manual.checkOut ? 'Data Tidak Lengkap' : 'Tidak Hadir'),
+    dataStatus: manual.checkIn && manual.checkOut ? 'Valid' : (manual.checkIn || manual.checkOut ? 'Data Tidak Lengkap' : 'No Data'),
+  } : null;
+  const fallbackManual = !manual && row?.isManualOverride && row.manualReason && !String(row.manualReason).startsWith('Foto ');
+  const base = savedManual || (fallbackManual ? {
+    checkIn: row.checkIn || null,
+    checkOut: row.checkOut || null,
+    status: row.status,
+    dataStatus: row.dataStatus,
+  } : attendanceFromRawTimestamps(row));
+  const photos = await db.PhotoAttendance.findAll({
+    where: { companyId: rec.companyId, employeeId: rec.employeeId, date: rec.date, status: 'APPROVED' },
+    order: [['createdAt', 'ASC']],
+    transaction,
+  });
+
+  const next = { ...base };
+  for (const photo of photos) {
+    if (photo.type === 'CHECK_IN') next.checkIn = photo.time || null;
+    else if (photo.type === 'CHECK_OUT') next.checkOut = photo.time || null;
+  }
+  if (photos.length) {
+    Object.assign(next, next.checkIn && next.checkOut
+      ? { status: 'Hadir', dataStatus: 'Valid' }
+      : { status: 'Data Tidak Lengkap', dataStatus: 'Data Tidak Lengkap' });
+  }
+
+  if (!row && photos.length === 0) return false;
+  if (!row) {
+    row = db.AttendanceRecord.build({
+      periodId: period.id,
+      companyId: rec.companyId,
+      employeeId: rec.employeeId,
+      date: rec.date,
+      rawTimestamps: [],
+    });
+  }
+  row.checkIn = next.checkIn;
+  row.checkOut = next.checkOut;
+  row.status = next.status || 'Tidak Hadir';
+  row.dataStatus = next.dataStatus || 'No Data';
+  row.isManualOverride = photos.length > 0 || !!manual || !!fallbackManual;
+  row.manualReason = photos.length
+    ? `Foto ${photos[photos.length - 1].type} tercatat`
+    : (manual?.reason || (fallbackManual ? row.manualReason : null));
+  await row.save({ transaction });
+  return photos.length > 0;
 }
 
 // Minimal magic-bytes check (multer already filters mime + extension).
@@ -299,42 +395,81 @@ exports.getOne = async (req, res, next) => {
 };
 
 exports.verify = async (req, res, next) => {
+  let transaction;
   try {
-    const rec = await db.PhotoAttendance.findByPk(req.params.id);
-    if (!rec) return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Data absensi foto tidak ditemukan' } });
-    if (rec.status !== 'PENDING') {
-      return res.status(409).json({ ok: false, error: { code: 'ALREADY_VERIFIED', message: `Sudah diverifikasi (${rec.status})` } });
+    transaction = await db.sequelize.transaction();
+    const rec = await db.PhotoAttendance.findByPk(req.params.id, {
+      transaction,
+      lock: transaction.LOCK.UPDATE,
+    });
+    if (!rec) {
+      await transaction.rollback();
+      return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: 'Data absensi foto tidak ditemukan' } });
+    }
+    if (rec.status === req.body.decision) {
+      await transaction.commit();
+      return res.json({ ok: true, data: { checkin: rec, integrated: rec.status === 'APPROVED', unchanged: true } });
     }
     const { decision, note } = req.body;
     rec.status = decision;
     rec.verifiedBy = req.user.sub;
     rec.verifiedAt = new Date();
     rec.verifyNote = note || null;
+    await rec.save({ transaction });
 
-    // Kept for legacy PENDING rows; new submissions are auto-approved.
-    let integrated = false;
-    let createdPeriod = false;
-    let createdRecord = false;
+    let created = { period: false, record: false };
     if (decision === 'APPROVED') {
-      const t = await db.sequelize.transaction();
-      try {
-        ({ createdPeriod, createdRecord } = await applyPhotoToAttendance(rec, req.user.sub, t));
-        rec.status = decision;
-        rec.verifiedBy = req.user.sub;
-        rec.verifiedAt = new Date();
-        rec.verifyNote = note || null;
-        await rec.save({ transaction: t });
-        await t.commit();
-        integrated = true;
-      } catch (txErr) {
-        await t.rollback();
-        throw txErr;
-      }
-    } else {
-      await rec.save();
+      created = await applyPhotoToAttendance(rec, req.user.sub, transaction);
     }
-    res.json({ ok: true, data: { checkin: rec, integrated, created: { period: createdPeriod, record: createdRecord } } });
-  } catch (e) { next(e); }
+    const integrated = await rebuildPhotoAttendanceDay(rec, transaction);
+    await transaction.commit();
+    res.json({ ok: true, data: { checkin: rec, integrated, created } });
+  } catch (e) {
+    if (transaction && !transaction.finished) await transaction.rollback();
+    next(e);
+  }
+};
+
+exports.bulkVerify = async (req, res, next) => {
+  let transaction;
+  try {
+    transaction = await db.sequelize.transaction();
+    const { ids, decision, note } = req.body;
+    const uniqueIds = [...new Set(ids)];
+    const records = [];
+    const changed = [];
+    for (const id of uniqueIds) {
+      const rec = await db.PhotoAttendance.findByPk(id, {
+        transaction,
+        lock: transaction.LOCK.UPDATE,
+      });
+      if (!rec) {
+        await transaction.rollback();
+        return res.status(404).json({ ok: false, error: { code: 'NOT_FOUND', message: `Absensi foto ${id} tidak ditemukan` } });
+      }
+      records.push(rec);
+      if (rec.status === decision) continue;
+      rec.status = decision;
+      rec.verifiedBy = req.user.sub;
+      rec.verifiedAt = new Date();
+      rec.verifyNote = note || null;
+      await rec.save({ transaction });
+      changed.push(rec);
+      if (decision === 'APPROVED') await applyPhotoToAttendance(rec, req.user.sub, transaction);
+    }
+
+    const affectedDays = new Map();
+    for (const rec of records) affectedDays.set(`${rec.companyId}|${rec.employeeId}|${rec.date}`, rec);
+    let integratedCount = 0;
+    for (const rec of affectedDays.values()) {
+      if (await rebuildPhotoAttendanceDay(rec, transaction)) integratedCount += 1;
+    }
+    await transaction.commit();
+    res.json({ ok: true, data: { updatedCount: changed.length, integratedDays: integratedCount, checkins: records } });
+  } catch (e) {
+    if (transaction && !transaction.finished) await transaction.rollback();
+    next(e);
+  }
 };
 
 exports.remove = async (req, res, next) => {
@@ -347,3 +482,4 @@ exports.remove = async (req, res, next) => {
 };
 
 module.exports.verifySchema = verifySchema;
+module.exports.bulkVerifySchema = bulkVerifySchema;
