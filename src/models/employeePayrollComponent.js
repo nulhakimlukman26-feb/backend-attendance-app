@@ -6,7 +6,7 @@ module.exports = (sequelize, DataTypes) => {
     companyId: { type: DataTypes.STRING, allowNull: false, field: 'company_id' },
     componentId: { type: DataTypes.STRING, field: 'component_id' },
     name: { type: DataTypes.STRING, allowNull: false },
-    type: { type: DataTypes.ENUM('allowance', 'deduction'), allowNull: false },
+    type: { type: DataTypes.ENUM('allowance', 'deduction', 'position'), allowNull: false },
     amount: { type: DataTypes.DECIMAL(14, 2), allowNull: false, defaultValue: 0 },
     isActive: { type: DataTypes.BOOLEAN, allowNull: false, defaultValue: true, field: 'is_active' },
   }, { tableName: 'employee_payroll_components', underscored: true, timestamps: true });
