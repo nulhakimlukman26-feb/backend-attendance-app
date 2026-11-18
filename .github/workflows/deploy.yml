@@ -98,7 +98,7 @@ jobs:
             docker compose -f docker-compose.prod.yml up -d
 
             echo "→ Running DB migrations…"
-            docker compose -f docker-compose.prod.yml run --rm app sequelize-cli db:migrate
+            docker compose -f docker-compose.prod.yml run --rm app npm run migrate
 
             docker image prune -f
 
