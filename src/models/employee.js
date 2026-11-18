@@ -31,7 +31,6 @@ module.exports = (sequelize, DataTypes) => {
     baseSalary: { type: DataTypes.DECIMAL(14,2), defaultValue: 1755000, field: 'base_salary' },
     dailySalary: { type: DataTypes.DECIMAL(14,2), defaultValue: 85000, field: 'daily_salary' },
     overtimeRate: { type: DataTypes.DECIMAL(14,2), defaultValue: 9000, field: 'overtime_rate' },
-    allowance: { type: DataTypes.DECIMAL(14,2), defaultValue: 0 },
     payrollType: { type: DataTypes.STRING, defaultValue: 'Monthly', field: 'payroll_type' },
     photo: DataTypes.TEXT,
     notes: DataTypes.TEXT,
@@ -41,6 +40,7 @@ module.exports = (sequelize, DataTypes) => {
   Employee.associate = (m) => {
     Employee.belongsTo(m.Company, { foreignKey: 'company_id' });
     Employee.hasMany(m.AttendanceRecord, { foreignKey: 'employee_id' });
+    Employee.hasMany(m.EmployeePayrollComponent, { foreignKey: 'employee_id', as: 'payrollComponents' });
   };
   return Employee;
 };

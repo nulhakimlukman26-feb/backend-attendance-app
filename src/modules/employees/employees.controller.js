@@ -59,7 +59,7 @@ exports.list = async (req, res, next) => {
       where[Op.or] = [{ fullName: { [Op.like]: q } }, { id: { [Op.like]: q } }, { email: { [Op.like]: q } }];
     }
     const { page, limit, offset } = parsePagination(req.query);
-    const { count, rows } = await db.Employee.findAndCountAll({ where, order:[['full_name','ASC']], limit, offset });
+    const { count, rows } = await db.Employee.findAndCountAll({ where, order:[['full_name','ASC']], limit, offset, include:[{ model: db.EmployeePayrollComponent, as:'payrollComponents' }] });
     res.json({ ok:true, data:{ employees: rows }, meta: paginationMeta(count, page, limit) });
   } catch(e){ next(e); }
 };
@@ -76,9 +76,13 @@ exports.create = async (req, res, next) => {
     const exists = await db.Employee.findByPk(id);
     if (exists) return res.status(409).json({ ok:false, error:{code:'DUPLICATE', message:'ID sudah ada'}});
     const data = { ...req.body, id, companyId };
+    const payrollComponents = Array.isArray(data.payrollComponents) ? data.payrollComponents : [];
+    delete data.payrollComponents;
     if (data.joinDate) data.joinDate = parseExcelDate(data.joinDate);
     if (data.birthDate) data.birthDate = parseExcelDate(data.birthDate);
     const employee = await db.Employee.create(data);
+    if (payrollComponents.length) await db.EmployeePayrollComponent.bulkCreate(payrollComponents.map(c => ({ ...c, id: undefined, employeeId: id, companyId })));
+    employee.setDataValue('payrollComponents', payrollComponents);
     res.status(201).json({ ok:true, data:{ employee }});
   } catch(e){ next(e); }
 };
@@ -162,7 +166,7 @@ exports.importXlsx = async (req, res, next) => {
 
 exports.getOne = async (req, res, next) => {
   try {
-    const emp = await db.Employee.findByPk(req.params.id);
+    const emp = await db.Employee.findByPk(req.params.id, { include:[{ model: db.EmployeePayrollComponent, as:'payrollComponents' }] });
     if (!emp) return res.status(404).json({ ok:false, error:{code:'NOT_FOUND'}});
     res.json({ ok:true, data:{ employee: emp }});
   } catch(e){ next(e); }
@@ -174,10 +178,16 @@ exports.update = async (req, res, next) => {
     if (!emp) return res.status(404).json({ ok:false, error:{code:'NOT_FOUND'}});
     if (req.body.joinDate) req.body.joinDate = parseExcelDate(req.body.joinDate);
     if (req.body.birthDate) req.body.birthDate = parseExcelDate(req.body.birthDate);
+    const payrollComponents = Array.isArray(req.body.payrollComponents) ? req.body.payrollComponents : null;
+    delete req.body.payrollComponents;
     Object.assign(emp, req.body);
     // prevent changing PK incorrectly
     if (req.body.id && req.body.id !== req.params.id) { /* ignore */ delete emp.id; }
     await emp.save();
+    if (payrollComponents) {
+      await db.EmployeePayrollComponent.destroy({ where:{ employeeId: emp.id } });
+      if (payrollComponents.length) await db.EmployeePayrollComponent.bulkCreate(payrollComponents.map(c => ({ ...c, id: undefined, employeeId: emp.id, companyId: emp.companyId })));
+    }
     res.json({ ok:true, data:{ employee: emp }});
   } catch(e){ next(e); }
 };
